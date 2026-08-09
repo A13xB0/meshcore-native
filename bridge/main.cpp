@@ -63,8 +63,9 @@ constexpr uint8_t kFrame = 0x01;       // a packet, either direction
 constexpr uint8_t kTick = 0x02;        // advance simulated time to N ms
 constexpr uint8_t kAck = 0x03;         // this node has caught up to N ms
 constexpr uint8_t kTxDone = 0x04;      // the waveform has left the antenna
-constexpr uint8_t kConsoleIn = 0x05;   // bytes typed at the node's UART
-constexpr uint8_t kConsoleOut = 0x06;  // bytes the node printed
+constexpr uint8_t kOriginate = 0x05;   // send a message of the node's own
+constexpr uint8_t kConsoleIn = 0x06;   // bytes typed at the node's UART
+constexpr uint8_t kConsoleOut = 0x07;  // bytes the node printed
 
 sock_t gFd = BAD_SOCK;
 std::deque<uint8_t> gConsoleIn;
@@ -218,6 +219,21 @@ int main(int argc, char** argv) {
 
       case kConsoleIn:
         gConsoleIn.insert(gConsoleIn.end(), payload.begin(), payload.end());
+        break;
+
+      case kOriginate:
+        // The application owns the mesh instance, not this file, so there is no
+        // generic way to make it author a packet — and fabricating one here is
+        // exactly what does not work: MeshCore drops what is not a valid packet,
+        // correctly, and nothing relays.
+        //
+        // Said out loud rather than ignored. A silently dropped request looks
+        // identical to a message that was sent and reached nobody, which is the
+        // single most misleading thing this bridge could do. Originate traffic
+        // through the node's own CLI instead — that is what the console is for.
+        fprintf(stderr,
+                "bridge: this application cannot be asked to originate; "
+                "send through its CLI on the console instead\n");
         break;
 
       case kTick: {
