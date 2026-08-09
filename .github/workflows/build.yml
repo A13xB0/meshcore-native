@@ -30,6 +30,11 @@ permissions:
 
 env:
   UPSTREAM: meshcore-dev/MeshCore
+  # Which platforms to publish. Only linux-amd64 is live: the Windows and macOS
+  # cross-builds do not compile yet (MSIM-41), and shipping a release that is
+  # missing two thirds of its matrix every night is noise rather than signal.
+  # Widen it with the PLATFORMS repository variable, no commit needed.
+  PLATFORMS: ${{ vars.PLATFORMS || 'linux-amd64' }}
 
 jobs:
   discover:
@@ -124,6 +129,9 @@ jobs:
           - {id: darwin-arm64,  runs_on: macos-14,        cxx: clang++,                      cc: clang}
         ref: ${{ fromJSON(needs.discover.outputs.matrix).include }}
     runs-on: ${{ matrix.target.runs_on }}
+    # A platform not in PLATFORMS is skipped, not removed: the entry above is
+    # still the record of how it is built.
+    if: contains(format('{0} ', vars.PLATFORMS || 'linux-amd64'), format('{0} ', matrix.target.id))
     steps:
       - uses: actions/checkout@v4
 
