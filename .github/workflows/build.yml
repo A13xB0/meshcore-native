@@ -20,10 +20,6 @@ on:
         description: 'Rebuild even if a release already exists'
         type: boolean
         default: false
-  schedule:
-    # Nightly, after upstream's own working day. A branch that has not moved
-    # costs one API call and no runner minutes.
-    - cron: '0 3 * * *'
 
 permissions:
   contents: write
@@ -250,6 +246,14 @@ jobs:
           shopt -s nullglob
           assets=(dist/*)
 
+          # Nothing built, nothing published. An empty release is worse than no
+          # release: it replaces a good one, and it looks like a version that
+          # exists and does not work.
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "::warning::no binaries for ${{ matrix.ref }}; leaving any existing release alone"
+            exit 0
+          fi
+
           # The commit is the point of the body, not decoration: the next run
           # reads it back to decide whether this ref still needs building.
           {
@@ -268,13 +272,7 @@ jobs:
             echo "architecture; a role absent below does not build for a desktop on this"
             echo "version of MeshCore."
             echo
-            if [ ${#assets[@]} -eq 0 ]; then
-              echo "**No desktop build.** Nothing in this version of MeshCore links against"
-              echo "the host variant. Recorded here so it is not attempted again every night;"
-              echo "re-run the workflow with \`force\` to try it anyway."
-              echo
-            fi
-            echo '| file | role | platform |'
+              echo '| file | role | platform |'
             echo '|---|---|---|'
             for f in "${assets[@]}"; do
               b=$(basename "$f"); r=${b#meshcore-}
@@ -300,9 +298,11 @@ jobs:
             gh release upload "${{ matrix.ref }}" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
           fi
 
+  # Chaining is off with the schedule: an unattended loop is only wanted once a
+  # run cannot damage what is already published.
   continue:
+    if: false # was: !cancelled() && needs.discover.outputs.backlog != '0'
     needs: [discover, publish]
-    if: ${{ !cancelled() && needs.discover.outputs.backlog != '0' }}
     runs-on: ubuntu-latest
     steps:
       - name: Queue the next batch
