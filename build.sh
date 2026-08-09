@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# Build one MeshCore application for this host.
+#
+#   MESHCORE=path/to/MeshCore CRYPTO=path/to/Crypto ./build.sh <role> [outdir]
+#
+# <role> is a directory name under MeshCore's examples/. It is not validated
+# against a list, because there is no list: a node is a node, and which
+# application it runs is the only thing that makes it a repeater rather than a
+# companion. When upstream adds an example, this builds it without being told.
+#
+# Sources are compiled individually and a source that will not compile for a
+# host is dropped rather than failing the build — a board-specific helper that
+# wants an SPI bus has nothing to say here. If dropping it leaves the link short
+# of a symbol, the role does not build on this host for this version, and that
+# is reported as such rather than papered over.
+set -uo pipefail
+
+role=${1:-}
+out=${2:-build}
+if [ -z "$role" ]; then
+  echo "usage: MESHCORE=... CRYPTO=... $0 <role> [outdir]" >&2
+  exit 2
+fi
+: "${MESHCORE:?set MESHCORE to a MeshCore checkout}"
+: "${CRYPTO:?set CRYPTO to arduinolibs/libraries/Crypto}"
+
+root=$(cd "$(dirname "$0")" && pwd)
+variant="$root/variants/host"
+src="$MESHCORE/examples/$role"
+[ -d "$src" ] || { echo "no such role: $role (looked in $MESHCORE/examples)" >&2; exit 2; }
+
+# The target, which is not necessarily this machine. Windows and 32-bit builds
+# are produced by cross-compilers on a Linux runner, so os/arch are inputs with
+# defaults rather than facts read off uname.
+case "$(uname -s)" in
+  Linux)  host_os=linux ;;
+  Darwin) host_os=darwin ;;
+  MINGW*|MSYS*|CYGWIN*) host_os=windows ;;
+  *) host_os=unknown ;;
+esac
+case "$(uname -m)" in
+  x86_64|amd64) host_arch=amd64 ;;
+  arm64|aarch64) host_arch=arm64 ;;
+  i?86) host_arch=386 ;;
+  *) host_arch=unknown ;;
+esac
+os=${TARGET_OS:-$host_os}
+arch=${TARGET_ARCH:-$host_arch}
+CXX=${CXX:-g++}
+CC=${CC:-gcc}
+# EXTRA_FLAGS reaches both the compiler and the linker, because the flags that
+# select a target — -m32 above all — are wrong in only one of the two.
+read -r -a extra_flags <<< "${EXTRA_FLAGS:-}"
+if [ "$os" = unknown ] || [ "$arch" = unknown ]; then
+  echo "set TARGET_OS and TARGET_ARCH: this machine reports $(uname -s)/$(uname -m)" >&2
+  exit 1
+fi
+
+exe=""
+extra_link=()
+if [ "$os" = windows ]; then
+  exe=".exe"
+  # Winsock is not linked by default, and the runtimes are static so the
+  # artefact is one file a user can run rather than one that wants DLLs.
+  extra_link=(-lws2_32 -static -static-libgcc -static-libstdc++)
+fi
+if [ ${#extra_flags[@]} -gt 0 ]; then
+  extra_link+=("${extra_flags[@]}")
+fi
+
+obj="$out/obj/$role"
+mkdir -p "$obj"
+bin="$out/meshcore-$role-$os-$arch$exe"
+
+inc=(-I "$variant" -I "$MESHCORE/src" -I "$src" -I "$CRYPTO" -I "$MESHCORE/lib/ed25519")
+# -O2, not -Os: this build exists to be fast, and it is also the build whose
+# results get compared against the emulated one. Optimisation level is exactly
+# the kind of difference that would make that comparison meaningless if it
+# drifted between machines, so it is pinned here rather than left to the caller.
+cxxflags=("${STD:--std=c++17}" -O2 -w -fpermissive -DMESHCORE_HOST_VARIANT=1 -DNRF52_PLATFORM=1 -DENABLE_USB_INTERFACE=1
+          -include "$variant/HostArduino.h" "${extra_flags[@]}")
+
+# Flags this particular role needs, if any. See roles.d/README.md.
+if [ -f "$root/roles.d/$role.flags" ]; then
+  while read -r line; do
+    case "$line" in ''|'#'*) continue ;; esac
+    cxxflags+=("$line")
+  done < "$root/roles.d/$role.flags"
+fi
+
+# Every .cpp MeshCore ships that could plausibly be host code, plus the chosen
+# application. Radio drivers and display drivers are not enumerated away — they
+# simply fail to compile and get dropped, which keeps this working when upstream
+# moves a file.
+mapfile -t candidates < <(
+  find "$MESHCORE/src" -maxdepth 2 -name '*.cpp' 2>/dev/null
+  find "$src" -maxdepth 1 -name '*.cpp' 2>/dev/null
+)
+
+skipped=()
+objs=()
+for f in "${candidates[@]}"; do
+  o="$obj/$(echo "${f#"$MESHCORE"/}" | tr '/' '_' | sed 's/\.cpp$/.o/')"
+  if "$CXX" "${cxxflags[@]}" "${inc[@]}" -c "$f" -o "$o" 2>"$o.log"; then
+    objs+=("$o")
+  else
+    skipped+=("${f#"$MESHCORE"/}")
+  fi
+done
+
+# The variant and the bridge are ours and must compile; a failure here is a bug
+# in this repository rather than an upstream file that does not suit a host.
+for f in "$variant"/*.cpp "$root/bridge/main.cpp"; do
+  o="$obj/$(basename "${f%.cpp}").o"
+  if ! "$CXX" "${cxxflags[@]}" "${inc[@]}" -c "$f" -o "$o"; then
+    echo "build.sh: the host variant itself failed to compile" >&2
+    exit 1
+  fi
+  objs+=("$o")
+done
+
+# Crypto and ed25519 are MeshCore's own dependencies, pinned by its lib_deps.
+for f in "$CRYPTO"/*.cpp; do
+  # RNG.cpp wants an entropy source and somewhere to persist a seed. The variant
+  # supplies a seeded one instead, because a run has to be reproducible.
+  [ "$(basename "$f")" = "RNG.cpp" ] && continue
+  o="$obj/crypto_$(basename "${f%.cpp}").o"
+  "$CXX" "${cxxflags[@]}" "${inc[@]}" -c "$f" -o "$o" 2>/dev/null && objs+=("$o")
+done
+for f in "$MESHCORE"/lib/ed25519/*.c; do
+  o="$obj/ed_$(basename "${f%.c}").o"
+  "$CC" -std=c11 -O2 -w -I "$MESHCORE/lib/ed25519" -c "$f" -o "$o" 2>/dev/null && objs+=("$o")
+done
+
+if ! "$CXX" -o "$bin" "${objs[@]}" "${extra_link[@]}" 2>"$obj/link.log"; then
+  echo "build.sh: $role does not link for a host on this MeshCore version." >&2
+  echo "Unresolved after dropping ${#skipped[@]} board-specific sources:" >&2
+  grep -o "undefined reference to \`[^']*'" "$obj/link.log" | sort -u | head -20 >&2
+  exit 3
+fi
+
+echo "$bin"

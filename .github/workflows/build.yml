@@ -1,0 +1,231 @@
+name: build
+
+# Native MeshCore firmware, one release per upstream ref.
+#
+# Two things this is careful about. It does not rebuild a ref it has already
+# released — an immutable tag that has a release is finished, and a branch is
+# rebuilt only when upstream's commit actually moved. And it does not enumerate
+# roles: a node is a node, and which application makes it a repeater rather than
+# a companion is discovered from MeshCore's examples/ directory at build time,
+# so a role added upstream tomorrow is built without this file changing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      refs:
+        description: 'Space-separated upstream refs to build; blank means every tag plus main and dev'
+        required: false
+        default: ''
+      force:
+        description: 'Rebuild even if a release already exists'
+        type: boolean
+        default: false
+  schedule:
+    # Nightly, after upstream's own working day. A branch that has not moved
+    # costs one API call and no runner minutes.
+    - cron: '0 3 * * *'
+
+permissions:
+  contents: write
+
+env:
+  UPSTREAM: meshcore-dev/MeshCore
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      any: ${{ steps.plan.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out what still needs building
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WANTED: ${{ inputs.refs }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          git clone --bare --filter=blob:none "https://github.com/$UPSTREAM" upstream.git
+          cd upstream.git
+
+          if [ -n "${WANTED:-}" ]; then
+            refs="$WANTED"
+          else
+            # Every tag ever released, plus the two moving targets. "All previous
+            # versions" is not a fixed list — it is whatever upstream has tagged
+            # by the time this runs.
+            refs="$(git tag | tr '\n' ' ') main dev"
+          fi
+
+          plan='[]'
+          for ref in $refs; do
+            sha=$(git rev-parse "$ref^{commit}" 2>/dev/null || git rev-parse "origin/$ref^{commit}" 2>/dev/null || true)
+            if [ -z "$sha" ]; then
+              echo "::warning::$UPSTREAM has no ref $ref; skipping"
+              continue
+            fi
+
+            # A release already carrying this exact commit is finished. Tags
+            # cannot move, so their release is final; main and dev are rebuilt
+            # only when the commit they point at has actually changed.
+            if [ "$FORCE" != "true" ]; then
+              existing=$(gh release view "$ref" --repo "$GITHUB_REPOSITORY" \
+                           --json body -q .body 2>/dev/null || true)
+              if [ -n "$existing" ] && printf '%s' "$existing" | grep -qF "meshcore-commit: $sha"; then
+                echo "$ref is already released at ${sha:0:8} — not rebuilding"
+                continue
+              fi
+            fi
+
+            plan=$(printf '%s' "$plan" | jq -c --arg r "$ref" --arg s "$sha" '. + [{ref:$r, sha:$s}]')
+          done
+
+          echo "matrix=$(printf '%s' "$plan" | jq -c '{include: .}')" >> "$GITHUB_OUTPUT"
+          echo "any=$(printf '%s' "$plan" | jq 'length > 0')" >> "$GITHUB_OUTPUT"
+          printf '%s' "$plan" | jq -r '.[] | "will build \(.ref) at \(.sha[0:8])"'
+
+  build:
+    needs: discover
+    if: needs.discover.outputs.any == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          # Every desktop architecture a user could be running the simulator on.
+          # Windows and 32-bit Linux are cross-compiled; macOS needs its own
+          # runners because the SDK is not redistributable.
+          - {id: linux-amd64,   runs_on: ubuntu-latest,   cxx: g++,                          cc: gcc}
+          - {id: linux-arm64,   runs_on: ubuntu-24.04-arm, cxx: g++,                         cc: gcc}
+          - {id: linux-386,     runs_on: ubuntu-latest,   cxx: g++,                          cc: gcc, extra: -m32, apt: gcc-multilib g++-multilib}
+          - {id: windows-amd64, runs_on: ubuntu-latest,   cxx: x86_64-w64-mingw32-g++,       cc: x86_64-w64-mingw32-gcc, apt: mingw-w64}
+          - {id: windows-386,   runs_on: ubuntu-latest,   cxx: i686-w64-mingw32-g++,         cc: i686-w64-mingw32-gcc,   apt: mingw-w64}
+          - {id: windows-arm64, runs_on: ubuntu-latest,   cxx: aarch64-w64-mingw32-clang++,  cc: aarch64-w64-mingw32-clang, llvm_mingw: true}
+          - {id: darwin-amd64,  runs_on: macos-13,        cxx: clang++,                      cc: clang}
+          - {id: darwin-arm64,  runs_on: macos-14,        cxx: clang++,                      cc: clang}
+        ref: ${{ fromJSON(needs.discover.outputs.matrix).include }}
+    runs-on: ${{ matrix.target.runs_on }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        if: matrix.target.apt != ''
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.target.apt }}
+
+      - name: LLVM-MinGW for Windows on ARM
+        if: matrix.target.llvm_mingw
+        run: |
+          set -euo pipefail
+          # GCC has no Windows-on-ARM backend; clang does. This is the same
+          # toolchain Microsoft's own ARM64 open-source builds use.
+          url=https://github.com/mstorsjo/llvm-mingw/releases/download/20250910/llvm-mingw-20250910-ucrt-ubuntu-22.04-x86_64.tar.xz
+          curl -fsSL "$url" | tar -xJ
+          echo "$PWD/llvm-mingw-20250910-ucrt-ubuntu-22.04-x86_64/bin" >> "$GITHUB_PATH"
+
+      - name: MeshCore ${{ matrix.ref.ref }}
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/$UPSTREAM MeshCore
+          git -C MeshCore checkout --detach ${{ matrix.ref.sha }}
+          # MeshCore's own dependency, pinned the way its lib_deps pins it.
+          git clone --depth 1 https://github.com/rweather/arduinolibs arduinolibs
+
+      - name: Build every role MeshCore ships
+        id: build
+        env:
+          MESHCORE: ${{ github.workspace }}/MeshCore
+          CRYPTO: ${{ github.workspace }}/arduinolibs/libraries/Crypto
+          CXX: ${{ matrix.target.cxx }}
+          CC: ${{ matrix.target.cc }}
+          EXTRA_FLAGS: ${{ matrix.target.extra }}
+        run: |
+          set -uo pipefail
+          os=${{ matrix.target.id }}; os=${os%%-*}
+          arch=${{ matrix.target.id }}; arch=${arch##*-}
+          export TARGET_OS=$os TARGET_ARCH=$arch
+          mkdir -p out
+
+          built=0; failed=0
+          # Roles are whatever upstream ships. Not a list in this file: that is
+          # the difference between a pipeline that survives a new node type and
+          # one that needs editing every time MeshCore grows.
+          for role in $(ls "$MESHCORE/examples"); do
+            printf '%-24s ' "$role"
+            if bin=$(./build.sh "$role" out 2>build-$role.log); then
+              echo "ok  ->  $(basename "$bin")"
+              built=$((built+1))
+            else
+              echo "not supported on this target"
+              sed 's/^/    /' build-$role.log | head -6
+              failed=$((failed+1))
+            fi
+          done
+          echo "built=$built failed=$failed"
+          # A target that produced nothing is a broken toolchain, not an
+          # unsupported role, and should fail loudly.
+          [ "$built" -gt 0 ]
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.ref.ref }}--${{ matrix.target.id }}
+          path: out/meshcore-*
+          if-no-files-found: error
+
+  publish:
+    needs: [discover, build]
+    if: always() && needs.discover.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ${{ matrix.ref }}--*
+          path: dist
+          merge-multiple: true
+
+      - name: Release ${{ matrix.ref }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ls -la dist || { echo "nothing built for ${{ matrix.ref }}"; exit 1; }
+
+          # The commit is the point of the body, not decoration: the next run
+          # reads it back to decide whether this ref still needs building.
+          {
+            echo "Native MeshCore builds of \`${{ matrix.ref }}\`."
+            echo
+            echo "meshcore-commit: ${{ matrix.sha }}"
+            echo
+            echo "Built from [${{ env.UPSTREAM }}](https://github.com/${{ env.UPSTREAM }}/commit/${{ matrix.sha }})"
+            echo "against the host variant in this repository. One binary per role per"
+            echo "architecture; a role absent below does not build for a desktop on this"
+            echo "version of MeshCore."
+            echo
+            echo '| file | role | platform |'
+            echo '|---|---|---|'
+            for f in dist/*; do
+              b=$(basename "$f"); r=${b#meshcore-}
+              echo "| \`$b\` | ${r%-*-*} | $(echo "$r" | grep -oE '[a-z0-9]+-[a-z0-9]+(\.exe)?$' | sed 's/\.exe$//') |"
+            done
+          } > notes.md
+
+          prerelease=""
+          [ "${{ matrix.ref }}" = "dev" ] && prerelease="--prerelease"
+
+          if gh release view "${{ matrix.ref }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # Branch releases move. Old assets are deleted rather than left
+            # alongside the new ones, or a user downloads last week's dev build.
+            gh release edit "${{ matrix.ref }}" --repo "$GITHUB_REPOSITORY" --notes-file notes.md $prerelease
+            for a in $(gh release view "${{ matrix.ref }}" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name'); do
+              gh release delete-asset "${{ matrix.ref }}" "$a" --repo "$GITHUB_REPOSITORY" --yes
+            done
+          else
+            gh release create "${{ matrix.ref }}" --repo "$GITHUB_REPOSITORY" \
+              --title "MeshCore ${{ matrix.ref }} (native)" --notes-file notes.md $prerelease
+          fi
+          gh release upload "${{ matrix.ref }}" dist/* --repo "$GITHUB_REPOSITORY" --clobber
