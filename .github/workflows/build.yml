@@ -27,6 +27,7 @@ on:
 
 permissions:
   contents: write
+  actions: write # so the backlog can queue its own next batch
 
 env:
   UPSTREAM: meshcore-dev/MeshCore
