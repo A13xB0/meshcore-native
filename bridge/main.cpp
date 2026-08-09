@@ -105,6 +105,10 @@ int consoleRead() {
   return c;
 }
 
+int consoleAvailable() { return (int)gConsoleIn.size(); }
+
+int consolePeek() { return gConsoleIn.empty() ? -1 : gConsoleIn.front(); }
+
 void flushConsole() {
   if (gConsoleOut.empty()) return;
   writeMsg(gFd, kConsoleOut, (const uint8_t*)gConsoleOut.data(), gConsoleOut.size());
@@ -193,7 +197,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "bridge: cannot reach the simulator at %s\n", bridge.c_str());
     return 1;
   }
-  Serial.attach(consoleWrite, consoleRead);
+  Serial.attach(consoleWrite, consoleRead, consoleAvailable, consolePeek);
 
   setup();
   drainTx();

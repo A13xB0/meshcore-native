@@ -66,14 +66,23 @@ inline long random(long howsmall, long howbig) {
 class HostSerial : public Stream {
  public:
   // The simulator swaps these for the bridge's own queues.
-  void attach(void (*out)(const char*, size_t), int (*in)()) {
+  //
+  // `avail` is separate from `in` and not optional. Answering "is there a byte"
+  // by taking one and looking at it destroys every other character: MeshCore's
+  // CLI calls available() before each read(), so `ver` arrived as `e` and the
+  // firmware answered "Unknown command" — correctly, about a command nobody
+  // typed.
+  void attach(void (*out)(const char*, size_t), int (*in)(), int (*avail)(),
+              int (*peek)() = nullptr) {
     out_ = out;
     in_ = in;
+    avail_ = avail;
+    peek_ = peek;
   }
 
-  int available() override { return in_ ? (in_() >= 0 ? 1 : 0) : 0; }
+  int available() override { return avail_ ? avail_() : 0; }
   int read() override { return in_ ? in_() : -1; }
-  int peek() override { return -1; }
+  int peek() override { return peek_ ? peek_() : -1; }
   void flush() override {}
 
   size_t write(uint8_t c) override {
@@ -124,6 +133,8 @@ class HostSerial : public Stream {
  private:
   void (*out_)(const char*, size_t) = nullptr;
   int (*in_)() = nullptr;
+  int (*avail_)() = nullptr;
+  int (*peek_)() = nullptr;
 };
 
 extern HostSerial Serial;
