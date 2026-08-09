@@ -56,7 +56,7 @@ jobs:
           # the matrix exists, not skipped once it does. The entries that are not
           # live stay in the file as the record of how they are built.
           live=$(jq -c --arg want "$PLATFORMS" \
-            '[.[] | select(($want | split(" ")) | index(.id))]' platforms.json)
+            '[.[] | select(.id as $id | ($want | split(" ")) | index($id))]' platforms.json)
           echo "targets=$live" >> "$GITHUB_OUTPUT"
           echo "building for: $(printf '%s' "$live" | jq -r '[.[].id] | join(", ")')"
 
