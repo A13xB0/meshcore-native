@@ -169,6 +169,7 @@ jobs:
           CXX: ${{ matrix.target.cxx }}
           CC: ${{ matrix.target.cc }}
           EXTRA_FLAGS: ${{ matrix.target.extra }}
+          REF: ${{ matrix.ref.ref }}
         run: |
           set -uo pipefail
           os=${{ matrix.target.id }}; os=${os%%-*}
@@ -176,11 +177,32 @@ jobs:
           export TARGET_OS=$os TARGET_ARCH=$arch
           mkdir -p out
 
+          # Upstream tags a role at a time — repeater-v1.17.0, companion-v1.17.0,
+          # room-server-v1.17.0 — so a tag says both which version and which node
+          # type it is a release of. Building all six applications at
+          # repeater-v1.16.0 would put a companion binary in a repeater's release
+          # and claim a version for it that upstream never cut.
+          #
+          # The prefix is matched against the example directory names rather than
+          # looked up in a table here: "repeater" finds simple_repeater and
+          # "room-server" finds simple_room_server on their own, so a role
+          # upstream starts tagging later needs no change. A ref with no role in
+          # its name — main, dev — is a snapshot of everything, and builds
+          # everything.
+          all_roles=$(ls "$MESHCORE/examples")
+          prefix=$(printf '%s' "$REF" | sed -E 's/-?v[0-9].*$//' | tr 'A-Z-' 'a-z_')
+          roles="$all_roles"
+          if [ -n "$prefix" ] && [ "$prefix" != "$REF" ]; then
+            roles=$(printf '%s\n' $all_roles | grep -F "$prefix" || true)
+            if [ -z "$roles" ]; then
+              echo "::warning::$REF looks like a $prefix release but no example matches; building all"
+              roles="$all_roles"
+            fi
+          fi
+          echo "$REF -> $(printf '%s' "$roles" | tr '\n' ' ')"
+
           built=0; failed=0
-          # Roles are whatever upstream ships. Not a list in this file: that is
-          # the difference between a pipeline that survives a new node type and
-          # one that needs editing every time MeshCore grows.
-          for role in $(ls "$MESHCORE/examples"); do
+          for role in $roles; do
             printf '%-24s ' "$role"
             if bin=$(./build.sh "$role" out 2>build-$role.log); then
               echo "ok  ->  $(basename "$bin")"
