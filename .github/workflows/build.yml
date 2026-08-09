@@ -37,6 +37,7 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       any: ${{ steps.plan.outputs.any }}
+      backlog: ${{ steps.plan.outputs.backlog }}
     steps:
       - uses: actions/checkout@v4
 
@@ -57,7 +58,9 @@ jobs:
             # Every tag ever released, plus the two moving targets. "All previous
             # versions" is not a fixed list — it is whatever upstream has tagged
             # by the time this runs.
-            refs="$(git tag | tr '\n' ' ') main dev"
+            # Newest first, so a fresh clone of this repository produces useful
+            # releases within the hour rather than starting at 2024.
+            refs="main dev $(git tag --sort=-creatordate | tr '\n' ' ')"
           fi
 
           plan='[]'
@@ -83,9 +86,21 @@ jobs:
             plan=$(printf '%s' "$plan" | jq -c --arg r "$ref" --arg s "$sha" '. + [{ref:$r, sha:$s}]')
           done
 
+          # A matrix is capped at 256 jobs and this one is refs x platforms, so a
+          # hundred upstream tags will not fit in a single run. Whatever does not
+          # fit is picked up by the next run, which is cheap: everything already
+          # released is skipped above, so the backlog drains monotonically
+          # instead of the whole history being recompiled each night.
+          batch=$(( 256 / 8 ))
+          total=$(printf '%s' "$plan" | jq 'length')
+          backlog=$(( total > batch ? total - batch : 0 ))
+          plan=$(printf '%s' "$plan" | jq -c ".[0:$batch]")
+
           echo "matrix=$(printf '%s' "$plan" | jq -c '{include: .}')" >> "$GITHUB_OUTPUT"
           echo "any=$(printf '%s' "$plan" | jq 'length > 0')" >> "$GITHUB_OUTPUT"
+          echo "backlog=$backlog" >> "$GITHUB_OUTPUT"
           printf '%s' "$plan" | jq -r '.[] | "will build \(.ref) at \(.sha[0:8])"'
+          [ "$backlog" -gt 0 ] && echo "::notice::$backlog more refs queued for the next run"
 
   build:
     needs: discover
@@ -175,7 +190,9 @@ jobs:
 
   publish:
     needs: [discover, build]
-    if: always() && needs.discover.outputs.any == 'true'
+    if: >-
+      !cancelled() && needs.discover.outputs.any == 'true'
+      && contains(fromJSON('["success", "failure"]'), needs.build.result)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -186,13 +203,15 @@ jobs:
           pattern: ${{ matrix.ref }}--*
           path: dist
           merge-multiple: true
+        continue-on-error: true
 
       - name: Release ${{ matrix.ref }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          ls -la dist || { echo "nothing built for ${{ matrix.ref }}"; exit 1; }
+          shopt -s nullglob
+          assets=(dist/*)
 
           # The commit is the point of the body, not decoration: the next run
           # reads it back to decide whether this ref still needs building.
@@ -206,9 +225,15 @@ jobs:
             echo "architecture; a role absent below does not build for a desktop on this"
             echo "version of MeshCore."
             echo
+            if [ ${#assets[@]} -eq 0 ]; then
+              echo "**No desktop build.** Nothing in this version of MeshCore links against"
+              echo "the host variant. Recorded here so it is not attempted again every night;"
+              echo "re-run the workflow with \`force\` to try it anyway."
+              echo
+            fi
             echo '| file | role | platform |'
             echo '|---|---|---|'
-            for f in dist/*; do
+            for f in "${assets[@]}"; do
               b=$(basename "$f"); r=${b#meshcore-}
               echo "| \`$b\` | ${r%-*-*} | $(echo "$r" | grep -oE '[a-z0-9]+-[a-z0-9]+(\.exe)?$' | sed 's/\.exe$//') |"
             done
@@ -228,4 +253,20 @@ jobs:
             gh release create "${{ matrix.ref }}" --repo "$GITHUB_REPOSITORY" \
               --title "MeshCore ${{ matrix.ref }} (native)" --notes-file notes.md $prerelease
           fi
-          gh release upload "${{ matrix.ref }}" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          if [ ${#assets[@]} -gt 0 ]; then
+            gh release upload "${{ matrix.ref }}" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          fi
+
+  continue:
+    needs: [discover, publish]
+    if: ${{ !cancelled() && needs.discover.outputs.backlog != '0' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Queue the next batch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The next run re-derives what is still missing rather than being told,
+          # so a release published by this run is skipped by the next one.
+          echo "${{ needs.discover.outputs.backlog }} refs still to build"
+          gh workflow run build.yml --repo "$GITHUB_REPOSITORY"
