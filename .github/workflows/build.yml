@@ -100,7 +100,9 @@ jobs:
           echo "any=$(printf '%s' "$plan" | jq 'length > 0')" >> "$GITHUB_OUTPUT"
           echo "backlog=$backlog" >> "$GITHUB_OUTPUT"
           printf '%s' "$plan" | jq -r '.[] | "will build \(.ref) at \(.sha[0:8])"'
-          [ "$backlog" -gt 0 ] && echo "::notice::$backlog more refs queued for the next run"
+          if [ "$backlog" -gt 0 ]; then
+            echo "::notice::$backlog more refs queued for the next run"
+          fi
 
   build:
     needs: discover
