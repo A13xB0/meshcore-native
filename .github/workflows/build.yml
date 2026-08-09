@@ -111,7 +111,6 @@ jobs:
 
   build:
     needs: discover
-    if: needs.discover.outputs.any == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -131,7 +130,9 @@ jobs:
     runs-on: ${{ matrix.target.runs_on }}
     # A platform not in PLATFORMS is skipped, not removed: the entry above is
     # still the record of how it is built.
-    if: contains(format('{0} ', vars.PLATFORMS || 'linux-amd64'), format('{0} ', matrix.target.id))
+    if: >-
+      needs.discover.outputs.any == 'true'
+      && contains(format('{0} ', vars.PLATFORMS || 'linux-amd64'), format('{0} ', matrix.target.id))
     steps:
       - uses: actions/checkout@v4
 
