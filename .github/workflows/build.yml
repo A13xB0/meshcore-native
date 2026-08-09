@@ -96,7 +96,9 @@ jobs:
             if [ "$FORCE" != "true" ]; then
               existing=$(gh release view "$ref" --repo "$GITHUB_REPOSITORY" \
                            --json body -q .body 2>/dev/null || true)
-              if [ -n "$existing" ] && printf '%s' "$existing" | grep -qF "meshcore-commit: $sha"; then
+              if [ -n "$existing" ] \
+                 && printf '%s' "$existing" | grep -qF "meshcore-commit: $sha" \
+                 && printf '%s' "$existing" | grep -qF "variant-commit: $GITHUB_SHA"; then
                 echo "$ref is already released at ${sha:0:8} — not rebuilding"
                 continue
               fi
@@ -231,6 +233,12 @@ jobs:
             echo "Native MeshCore builds of \`${{ matrix.ref }}\`."
             echo
             echo "meshcore-commit: ${{ matrix.sha }}"
+            # The variant is half of what produced these binaries. Keying the
+            # skip on the upstream commit alone means a fix to the host variant
+            # or the bridge never reaches a release that already exists — the
+            # build is silently frozen at whatever this repository looked like
+            # the first time that ref was seen.
+            echo "variant-commit: ${{ github.sha }}"
             echo
             echo "Built from [${{ env.UPSTREAM }}](https://github.com/${{ env.UPSTREAM }}/commit/${{ matrix.sha }})"
             echo "against the host variant in this repository. One binary per role per"
