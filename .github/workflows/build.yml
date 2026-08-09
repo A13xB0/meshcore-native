@@ -43,8 +43,22 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
       any: ${{ steps.plan.outputs.any }}
       backlog: ${{ steps.plan.outputs.backlog }}
+      targets: ${{ steps.targets.outputs.targets }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Which platforms are live
+        id: targets
+        run: |
+          set -euo pipefail
+          # Defined in platforms.json rather than inline, because a job-level
+          # `if` cannot see `matrix` — a platform has to be filtered out before
+          # the matrix exists, not skipped once it does. The entries that are not
+          # live stay in the file as the record of how they are built.
+          live=$(jq -c --arg want "$PLATFORMS" \
+            '[.[] | select(($want | split(" ")) | index(.id))]' platforms.json)
+          echo "targets=$live" >> "$GITHUB_OUTPUT"
+          echo "building for: $(printf '%s' "$live" | jq -r '[.[].id] | join(", ")')"
 
       - name: Work out what still needs building
         id: plan
@@ -114,25 +128,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target:
-          # Every desktop architecture a user could be running the simulator on.
-          # Windows and 32-bit Linux are cross-compiled; macOS needs its own
-          # runners because the SDK is not redistributable.
-          - {id: linux-amd64,   runs_on: ubuntu-latest,   cxx: g++,                          cc: gcc}
-          - {id: linux-arm64,   runs_on: ubuntu-24.04-arm, cxx: g++,                         cc: gcc}
-          - {id: linux-386,     runs_on: ubuntu-latest,   cxx: g++,                          cc: gcc, extra: -m32, apt: gcc-multilib g++-multilib}
-          - {id: windows-amd64, runs_on: ubuntu-latest,   cxx: x86_64-w64-mingw32-g++,       cc: x86_64-w64-mingw32-gcc, apt: mingw-w64}
-          - {id: windows-386,   runs_on: ubuntu-latest,   cxx: i686-w64-mingw32-g++,         cc: i686-w64-mingw32-gcc,   apt: mingw-w64}
-          - {id: windows-arm64, runs_on: ubuntu-latest,   cxx: aarch64-w64-mingw32-clang++,  cc: aarch64-w64-mingw32-clang, llvm_mingw: true}
-          - {id: darwin-amd64,  runs_on: macos-13,        cxx: clang++,                      cc: clang}
-          - {id: darwin-arm64,  runs_on: macos-14,        cxx: clang++,                      cc: clang}
+        target: ${{ fromJSON(needs.discover.outputs.targets) }}
         ref: ${{ fromJSON(needs.discover.outputs.matrix).include }}
     runs-on: ${{ matrix.target.runs_on }}
     # A platform not in PLATFORMS is skipped, not removed: the entry above is
     # still the record of how it is built.
-    if: >-
-      needs.discover.outputs.any == 'true'
-      && contains(format('{0} ', vars.PLATFORMS || 'linux-amd64'), format('{0} ', matrix.target.id))
+    if: needs.discover.outputs.any == 'true'
     steps:
       - uses: actions/checkout@v4
 
