@@ -10,6 +10,7 @@
 #include "target.h"
 
 #include <Arduino.h>
+#include <stdio.h>
 
 #include <Wire.h>
 
@@ -17,7 +18,17 @@
 #include "InternalFileSystem.h"
 
 HostBoard board;
-HostRadio radio_driver;
+
+// MeshCore's own driver, over real RadioLib, on a virtual chip.
+//
+// The pin numbers are labels, not wires: SimHal answers BUSY and DIO1 by
+// number and ignores the rest. What matters is that RadioLib is handed a
+// Module backed by our HAL, so every SPI transaction it issues reaches the
+// virtual SX1262 and every answer returns by the path a real one would.
+SimHal sim_hal;
+CustomSX1262 radio = new Module(&sim_hal, SimHal::kPinNss, SimHal::kPinDio1,
+                                SimHal::kPinReset, SimHal::kPinBusy);
+CustomSX1262Wrapper radio_driver(radio, board);
 HostRTCClock rtc_clock;
 HostSensorManager sensors;
 
@@ -26,6 +37,7 @@ HostSensorManager sensors;
 HostSerial Serial;
 Adafruit_LittleFS InternalFS;
 TwoWire Wire;
+SPIClass SPI;
 
 // A real variant also defines `radio`, the RadioLib driver instance, and wraps
 // it. There is no SX1262 here — the driver *is* the wrapper, because the thing
@@ -48,7 +60,15 @@ int g_cr = 1;
 // where determinism gets injected.
 uint32_t g_identity_seed = 4417;
 
-bool radio_init() { return true; }
+bool radio_init() {
+  // std_init walks RadioLib's begin(): calibration, TCXO, the modem
+  // parameters, exactly as on hardware. If the virtual chip has a reply wrong,
+  // it shows here and loudly, rather than as odd behaviour three layers up.
+  fprintf(stderr, "radio_init: entering std_init\n"); fflush(stderr);
+  bool ok = radio.std_init(nullptr);
+  fprintf(stderr, "radio_init: std_init returned %d\n", (int)ok); fflush(stderr);
+  return ok;
+}
 
 mesh::LocalIdentity radio_new_identity() {
   HostRNG rng(g_identity_seed);

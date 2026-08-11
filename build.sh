@@ -72,12 +72,25 @@ obj="$out/obj/$role"
 mkdir -p "$obj"
 bin="$out/meshcore-$role-$os-$arch$exe"
 
-inc=(-I "$variant" -I "$MESHCORE/src" -I "$src" -I "$CRYPTO" -I "$MESHCORE/lib/ed25519")
+# RadioLib is vendored (MIT, see vendor/RadioLib/VENDORED.md) and compiled in,
+# so MeshCore's own radio driver runs against the library it was written for
+# rather than against a stand-in of ours.
+radiolib="$root/vendor/RadioLib/src"
+inc=(-I "$variant" -I "$MESHCORE/src" -I "$src" -I "$CRYPTO" -I "$MESHCORE/lib/ed25519" -I "$radiolib")
 # -O2, not -Os: this build exists to be fast, and it is also the build whose
 # results get compared against the emulated one. Optimisation level is exactly
 # the kind of difference that would make that comparison meaningless if it
 # drifted between machines, so it is pinned here rather than left to the caller.
 cxxflags=("${STD:--std=c++17}" -O2 -w -fpermissive -DMESHCORE_HOST_VARIANT=1 -DNRF52_PLATFORM=1 -DENABLE_USB_INTERFACE=1
+          # What MeshCore's own platformio.ini sets for every board, and needed
+          # here for the same reasons: its driver reaches into RadioLib's
+          # internals, which GODMODE makes public, and STATIC_ONLY keeps
+          # RadioLib off the heap.
+          -DRADIOLIB_GODMODE=1 -DRADIOLIB_STATIC_ONLY=1
+          # The radio a board is fitted with. Real variants set these per board;
+          # the scenario overrides them at runtime, and RadioLib's begin() wants
+          # a starting point.
+          -DLORA_FREQ=869.618 -DLORA_BW=62.5 -DLORA_SF=8 -DLORA_CR=5 -DLORA_TX_POWER=20
           -include "$variant/HostArduino.h" "${extra_flags[@]}")
 
 # Flags this particular role needs, if any. See roles.d/README.md.
@@ -94,6 +107,14 @@ fi
 # moves a file.
 mapfile -t candidates < <(
   find "$MESHCORE/src" -maxdepth 2 -name '*.cpp' 2>/dev/null
+  # The radio driver layer sits a level deeper than the sweep above reaches,
+  # and is the whole reason RadioLib is here: this is MeshCore's own driver.
+  find "$MESHCORE/src/helpers/radiolib" -maxdepth 1 -name '*.cpp' 2>/dev/null
+  # RadioLib: the library itself, its SX126x family, and its own HAL base.
+  find "$radiolib" -maxdepth 1 -name '*.cpp' 2>/dev/null
+  find "$radiolib/modules/SX126x" -name '*.cpp' 2>/dev/null
+  find "$radiolib/protocols/PhysicalLayer" -name '*.cpp' 2>/dev/null
+  find "$radiolib/utils" -name '*.cpp' 2>/dev/null
   find "$src" -maxdepth 1 -name '*.cpp' 2>/dev/null
 )
 

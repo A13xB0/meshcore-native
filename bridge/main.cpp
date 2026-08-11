@@ -44,6 +44,7 @@
 #include <vector>
 
 #include "target.h"
+#include "SimHal.h"
 
 // The application's entry points, as on any Arduino target.
 void setup();
@@ -124,9 +125,10 @@ void flushConsole() {
 // a property of the samples the engine generated. Computing it here from the
 // airtime estimate would replace the simulation with the formula.
 void drainTx() {
-  if (!radio_driver.hasPendingTx) return;
-  radio_driver.hasPendingTx = false;
-  writeMsg(gFd, kFrame, radio_driver.pendingTx.data(), radio_driver.pendingTx.size());
+  auto& chip = sim_hal.chip();
+  if (!chip.hasPendingTx) return;
+  chip.hasPendingTx = false;
+  writeMsg(gFd, kFrame, chip.pendingTx.data(), chip.pendingTx.size());
 }
 
 sock_t connectTo(const std::string& addr) {
@@ -182,7 +184,7 @@ int main(int argc, char** argv) {
   // airtime formula still agrees with its own. Two copies of a formula that
   // nothing compares are two formulas.
   if (printAirtimeFor >= 0) {
-    printf("%u\n", radio_driver.getEstAirtimeFor(printAirtimeFor));
+    printf("%u\n", sim_hal.chip().estAirtimeMs(printAirtimeFor));
     return 0;
   }
   if (bridge.empty()) {
@@ -215,11 +217,11 @@ int main(int argc, char** argv) {
       case kFrame:
         // Queued, not delivered. The application collects it from recvRaw() on
         // its next loop, exactly as it would drain a real radio's FIFO.
-        radio_driver.inbox.push_back(std::move(payload));
+        sim_hal.chip().inbox.push_back(std::move(payload));
         break;
 
       case kTxDone:
-        radio_driver.transmitFinished();
+        sim_hal.chip().transmitFinished();
         break;
 
       case kChannelBusy:
@@ -228,7 +230,7 @@ int main(int argc, char** argv) {
         // strongly each arrives here. Sent immediately before the tick it
         // applies to, so the node reads the channel as it was at that instant
         // rather than as it was a tick ago.
-        radio_driver.setChannelBusy(!payload.empty() && payload[0] != 0);
+        sim_hal.chip().setChannelBusy(!payload.empty() && payload[0] != 0);
         break;
 
       case kConsoleIn:
@@ -251,6 +253,10 @@ int main(int argc, char** argv) {
         break;
 
       case kTick: {
+        // Reconcile the node's own clock to network time, then let RadioLib
+        // service anything the chip raised. Servicing here rather than from
+        // inside the chip means an ISR never runs in the middle of an SPI
+        // transaction - which it cannot on hardware either.
         if (n != 4) break;
         uint32_t at = ((uint32_t)payload[0] << 24) | ((uint32_t)payload[1] << 16) |
                       ((uint32_t)payload[2] << 8) | payload[3];
@@ -260,9 +266,13 @@ int main(int argc, char** argv) {
         // takes different branches.
         while (g_sim_millis < at) {
           g_sim_millis++;
+          sim_hal.beginTick(g_sim_millis);
+          sim_hal.servicePendingIrq();
           loop();
           drainTx();
         }
+        sim_hal.beginTick(g_sim_millis);
+        sim_hal.servicePendingIrq();
         loop();
         drainTx();
         flushConsole();

@@ -42,3 +42,18 @@ inline int analogRead(int) { return 0; }
 #define INPUT 0
 #define OUTPUT 1
 #define INPUT_PULLUP 2
+
+// SPI, which nothing here uses.
+//
+// MeshCore's std_init takes an SPIClass* so a board can hand it the bus its
+// radio is wired to. There is no bus: RadioLib reaches the virtual chip through
+// SimHal, and this exists only so the signature resolves. Passing one in would
+// be harmless and pointless, which is why the variant passes nullptr.
+class SPIClass {
+ public:
+  void begin() {}
+  void begin(int, int, int) {}
+  void end() {}
+  void setPins(int, int, int) {}
+};
+extern SPIClass SPI;
