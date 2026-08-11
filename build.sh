@@ -139,7 +139,12 @@ done
 
 # The variant and the bridge are ours and must compile; a failure here is a bug
 # in this repository rather than an upstream file that does not suit a host.
+#
+# Test programs in the variant directory are skipped: they carry their own
+# main(), so linking one into a role produces "multiple definition of main" and
+# takes down every role at once, which reads as the role not porting.
 for f in "$variant"/*.cpp "$root/bridge/main.cpp"; do
+  case "$(basename "$f")" in *_test.cpp) continue ;; esac
   o="$obj/$(basename "${f%.cpp}").o"
   if ! "$CXX" "${cxxflags[@]}" "${inc[@]}" -c "$f" -o "$o"; then
     echo "build.sh: the host variant itself failed to compile" >&2
