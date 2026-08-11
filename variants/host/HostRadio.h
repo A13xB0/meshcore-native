@@ -62,6 +62,24 @@ class HostRadio : public mesh::Radio {
   int getNoiseFloor() const override { return noiseFloor_; }
   bool isInRecvMode() const override { return !sending_; }
 
+  // Is another station on the air right now, loud enough for this node to hear?
+  //
+  // This is what MeshCore's listen-before-talk asks before transmitting
+  // (Dispatcher::checkSend). The base class answers false, and left
+  // unimplemented that is what every node believed: the channel is permanently
+  // clear, nobody ever defers, and the entire CAD path is unreachable. Two
+  // firmware versions differing only in their listen-before-talk code then
+  // produce bit-identical timing - which is not the firmware behaving
+  // identically, but the simulator declining to ask the question.
+  //
+  // Only the engine can answer it: it knows which waveforms overlap this
+  // node's antenna and how strong each one arrives. It sends that in; this
+  // reports it.
+  bool isReceiving() override { return channelBusy_; }
+
+  // Set from the bridge once per tick, before the node is advanced.
+  void setChannelBusy(bool busy) { channelBusy_ = busy; }
+
   // ---- what the repeater application calls on its driver ----
 
   void setParams(float freq, float bw, uint8_t sf, uint8_t cr) {
@@ -107,6 +125,7 @@ class HostRadio : public mesh::Radio {
 
  private:
   bool sending_ = false;
+  bool channelBusy_ = false;
   bool onAir_ = false;
   bool boosted_ = false;
   int noiseFloor_ = -114;

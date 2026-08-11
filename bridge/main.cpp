@@ -66,6 +66,7 @@ constexpr uint8_t kTxDone = 0x04;      // the waveform has left the antenna
 constexpr uint8_t kOriginate = 0x05;   // send a message of the node's own
 constexpr uint8_t kConsoleIn = 0x06;   // bytes typed at the node's UART
 constexpr uint8_t kConsoleOut = 0x07;  // bytes the node printed
+constexpr uint8_t kChannelBusy = 0x08; // is another station on the air here?
 
 sock_t gFd = BAD_SOCK;
 std::deque<uint8_t> gConsoleIn;
@@ -219,6 +220,15 @@ int main(int argc, char** argv) {
 
       case kTxDone:
         radio_driver.transmitFinished();
+        break;
+
+      case kChannelBusy:
+        // What listen-before-talk asks the radio, answered by the only thing
+        // that knows: the engine, which has every waveform in flight and how
+        // strongly each arrives here. Sent immediately before the tick it
+        // applies to, so the node reads the channel as it was at that instant
+        // rather than as it was a tick ago.
+        radio_driver.setChannelBusy(!payload.empty() && payload[0] != 0);
         break;
 
       case kConsoleIn:
