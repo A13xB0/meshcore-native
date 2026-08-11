@@ -52,6 +52,7 @@ void loop();
 
 // Defined by the host variant.
 extern uint32_t g_sim_millis;
+int g_stuck_irq_ms = 0;
 extern int g_sf;
 extern float g_bwKHz;
 extern int g_cr;
@@ -68,6 +69,7 @@ constexpr uint8_t kOriginate = 0x05;   // send a message of the node's own
 constexpr uint8_t kConsoleIn = 0x06;   // bytes typed at the node's UART
 constexpr uint8_t kConsoleOut = 0x07;  // bytes the node printed
 constexpr uint8_t kChannelBusy = 0x08; // is another station on the air here?
+constexpr uint8_t kRadioStats = 0x09;  // node -> host: what the chip has seen
 
 sock_t gFd = BAD_SOCK;
 std::deque<uint8_t> gConsoleIn;
@@ -177,6 +179,11 @@ int main(int argc, char** argv) {
     else if (!strcmp(argv[i], "--sf")) g_sf = atoi(next());
     else if (!strcmp(argv[i], "--bw-khz")) g_bwKHz = (float)atof(next());
     else if (!strcmp(argv[i], "--cr")) g_cr = atoi(next());
+    // Fault injection: how long a raised detection flag refuses to clear.
+    // This is the misbehaviour MeshCore 1.17 was written to survive, and
+    // without a way to reproduce it the difference between 1.16 and 1.17
+    // cannot be observed at all.
+    else if (!strcmp(argv[i], "--stuck-irq-ms")) g_stuck_irq_ms = atoi(next());
     else if (!strcmp(argv[i], "--print-airtime")) printAirtimeFor = atoi(next());
   }
 
@@ -202,6 +209,10 @@ int main(int argc, char** argv) {
   }
   Serial.attach(consoleWrite, consoleRead, consoleAvailable, consolePeek);
 
+  // Only if asked for on the command line. A build compiled as a faulty
+  // variant already has its value, and overwriting it with the flag default
+  // silently turned that whole variant back into a well-behaved one.
+  if (g_stuck_irq_ms > 0) sim_hal.chip().setStuckIrqMs((uint32_t)g_stuck_irq_ms);
   setup();
   drainTx();
   flushConsole();
@@ -276,6 +287,19 @@ int main(int argc, char** argv) {
         loop();
         drainTx();
         flushConsole();
+        {
+          // What the chip has seen, alongside the acknowledgement. Cheap, and
+          // it turns "the mesh went quiet" into a question with an answer:
+          // was the channel busy, or did our chip only say so?
+          auto& c = sim_hal.chip();
+          uint32_t st[4] = {c.irqReads(), c.busyReads(), c.busyMs(), c.spuriousRaises()};
+          uint8_t sb[16];
+          for (int k = 0; k < 4; k++) {
+            sb[k*4+0] = (uint8_t)(st[k] >> 24); sb[k*4+1] = (uint8_t)(st[k] >> 16);
+            sb[k*4+2] = (uint8_t)(st[k] >> 8);  sb[k*4+3] = (uint8_t)st[k];
+          }
+          writeMsg(gFd, kRadioStats, sb, sizeof(sb));
+        }
         if (!writeMsg(gFd, kAck, payload.data(), 4)) goto done;
         break;
       }

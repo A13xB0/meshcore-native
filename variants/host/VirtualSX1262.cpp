@@ -70,10 +70,43 @@ VirtualSX1262::VirtualSX1262() {
   // Receiver gain, which MeshCore reads back to report whether boosted mode is
   // on. Power-on default is the non-boosted value.
   regs_[0x08AC] = 0x94;
+
+#ifdef VIRTUAL_SX1262_STUCK_IRQ_MS
+  // A deliberately misbehaving chip, built as its own firmware variant.
+  //
+  // Real SX1262s sometimes latch the detection flags and refuse to clear them -
+  // the "4 second lock-up" MeshCore's release notes describe. A driver that
+  // trusts those flags then believes the channel is busy for ever and stops
+  // transmitting; 1.17 exists to time them out and recover. On a chip that
+  // behaves, 1.16 and 1.17 are indistinguishable, which is exactly what a
+  // twelve-run sweep found. This variant makes the fault reproducible, so the
+  // difference between the two versions can be measured rather than assumed.
+  stuckIrqMs_ = VIRTUAL_SX1262_STUCK_IRQ_MS;
+#endif
 }
 
 void VirtualSX1262::tick(uint64_t nowMs) {
+  // Time with the busy flags up, which is what the firmware is reacting to.
+  if ((irq_ & (kIrqPreambleDetected | kIrqHeaderValid)) && nowMs > lastBusyTickMs_) {
+    busyMs_ += (uint32_t)(nowMs - lastBusyTickMs_);
+  }
+  lastBusyTickMs_ = nowMs;
   nowMs_ = nowMs;
+
+  // The fault, on builds compiled to have it: a detection interrupt that fires
+  // with nothing on the air and then stays up.
+  //
+  // Clearing it works perfectly well - which is the whole point. A driver that
+  // clears the flag when it has been set implausibly long recovers; one that
+  // trusts it believes the channel is busy for ever and stops transmitting.
+  // That is the difference between MeshCore 1.16 and 1.17, and it cannot be
+  // seen on a chip that never lies.
+  if (stuckIrqMs_ > 0 && mode_ == 1 && nowMs_ >= nextSpuriousMs_) {
+    irq_ |= kIrqPreambleDetected;
+    spuriousRaises_++;
+    nextSpuriousMs_ = nowMs_ + stuckIrqMs_;
+  }
+
   if (mode_ == 1) deliverPending();
 
   // Preamble and header detection, in receive mode only. A node cannot hear
@@ -87,6 +120,7 @@ void VirtualSX1262::tick(uint64_t nowMs) {
     if (!preambleRaised_ && sinceMs >= kPreambleSymbols * symbolMs) {
       irq_ |= kIrqPreambleDetected;
       preambleRaised_ = true;
+      preambleRaises_++;
     }
     if (!headerRaised_ && sinceMs >= kHeaderSymbols * symbolMs) {
       irq_ |= kIrqHeaderValid | kIrqSyncWordValid;
@@ -263,6 +297,8 @@ void VirtualSX1262::runCommand(const uint8_t* out, size_t len, uint8_t* in) {
 
     case kGetIrqStatus:
       // [op][nop][status][irq hi][irq lo]
+      irqReads_++;
+      if (irq_ & (kIrqPreambleDetected | kIrqHeaderValid)) busyReads_++;
       if (len >= 4) in[2] = (uint8_t)(irq_ >> 8);
       if (len >= 5) in[3] = (uint8_t)(irq_ & 0xFF);
       break;

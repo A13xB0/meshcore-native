@@ -58,6 +58,28 @@ class VirtualSX1262 {
 
   bool irqAsserted() const { return (irq_ & irqMask_) != 0; }
 
+  // ---- what the firmware's channel decisions look like from below ----
+  //
+  // MeshCore decides whether to defer by reading the IRQ register. Counting
+  // those reads, and how long the busy flags were up, is the only way to tell
+  // "the mesh is genuinely busy" from "our chip cries busy too readily" - and
+  // the second is a fault in the simulator that would look exactly like a
+  // finding about the firmware.
+  uint32_t irqReads() const { return irqReads_; }
+  uint32_t busyReads() const { return busyReads_; }
+  uint32_t busyMs() const { return busyMs_; }
+  uint32_t preambleRaises() const { return preambleRaises_; }
+  uint32_t spuriousRaises() const { return spuriousRaises_; }
+
+  // Latch a flag once raised, as a misbehaving chip does.
+  //
+  // This is the fault MeshCore 1.17 exists to survive: a preamble or header
+  // flag that sets and never clears, so a driver that trusts it believes the
+  // channel is busy for ever and stops transmitting. 1.16 trusts it; 1.17 times
+  // it out. Without a way to reproduce the fault, the difference between them
+  // cannot be observed at all - which is exactly what twelve runs showed.
+  void setStuckIrqMs(uint32_t ms) { stuckIrqMs_ = ms; }
+
   // Airtime, from the parameters the firmware actually programmed.
   uint32_t estAirtimeMs(int lenBytes) const;
 
@@ -105,4 +127,17 @@ class VirtualSX1262 {
 
   float rssi_ = -100, snr_ = 0;
   uint64_t nowMs_ = 0;
+
+  // Instrumentation.
+  uint32_t irqReads_ = 0;
+  uint32_t busyReads_ = 0;
+  uint32_t busyMs_ = 0;
+  uint32_t preambleRaises_ = 0;
+  uint64_t lastBusyTickMs_ = 0;
+
+  // Fault injection: how long a raised flag refuses to clear. 0 is a chip that
+  // behaves.
+  uint32_t stuckIrqMs_ = 0;
+  uint64_t nextSpuriousMs_ = 0;
+  uint32_t spuriousRaises_ = 0;
 };

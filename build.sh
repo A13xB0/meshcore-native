@@ -93,6 +93,14 @@ cxxflags=("${STD:--std=c++17}" -O2 -w -fpermissive -DMESHCORE_HOST_VARIANT=1 -DN
           -DLORA_FREQ=869.618 -DLORA_BW=62.5 -DLORA_SF=8 -DLORA_CR=5 -DLORA_TX_POWER=20
           -include "$variant/HostArduino.h" "${extra_flags[@]}")
 
+# A build whose virtual radio misbehaves the way real ones do. Published as its
+# own variant - see roles.d/README.md - because "does this firmware survive a
+# radio that latches its interrupt flags" is a question about the firmware, and
+# an experiment should be able to select it like any other build.
+if [ -n "${STUCK_IRQ_MS:-}" ]; then
+  cxxflags+=("-DVIRTUAL_SX1262_STUCK_IRQ_MS=$STUCK_IRQ_MS")
+fi
+
 # Flags this particular role needs, if any. See roles.d/README.md.
 if [ -f "$root/roles.d/$role.flags" ]; then
   while read -r line; do

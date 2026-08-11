@@ -55,6 +55,36 @@ Two deliberate departures from silicon:
   time never ends — a hang the firmware cannot tell apart from a fast chip, and
   worth removing outright.
 
+## The faulty variants
+
+Alongside each release there is a `-faultyirq` build: the same firmware, on a
+virtual radio that **misbehaves the way real ones do**.
+
+Real SX1262s sometimes latch their detection interrupts and refuse to clear
+them. A driver that trusts those flags then believes the channel is permanently
+busy and stops transmitting — the "4 second lock-up" MeshCore's own release
+notes describe, and the reason its 1.17 driver stopped trusting the flags and
+started timing them out instead.
+
+On a chip that behaves, 1.16 and 1.17 are indistinguishable. That is not a
+guess: twelve runs across a 154-node mesh produced byte-identical results,
+because the recovery path 1.17 added never had anything to recover from.
+
+So the fault is a build:
+
+    repeater-v1.17.0             a chip that behaves
+    repeater-v1.17.0-faultyirq   a chip that latches its detection flags
+
+Making it a variant rather than a runtime switch means an experiment can select
+it exactly like any other firmware version, and "does this release survive a
+radio that sticks?" becomes a question you can put in a matrix and measure.
+
+The chip also reports what the firmware asked it: how many times the interrupt
+register was read, how many of those reads found a busy flag set, how long the
+flags were up, and how many preambles it raised. That is what separates "the
+mesh is genuinely busy" from "our chip cries busy too readily" — and the second
+would look exactly like a finding about the firmware.
+
 ## A node is a node
 
 There is no list of supported node types here, and that is deliberate. A
