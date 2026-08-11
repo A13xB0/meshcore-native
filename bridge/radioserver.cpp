@@ -274,29 +274,65 @@ int main(int argc, char** argv) {
   // A broken pipe is an emulator that has exited, which is ordinary. Let the
   // read fail and tidy up rather than dying on a signal.
   ::signal(SIGPIPE, SIG_IGN);
-  ::unlink(path);
 
-  int srv = ::socket(AF_UNIX, SOCK_STREAM, 0);
-  if (srv < 0) {
-    perror("socket");
-    return 1;
+  // Two ways in, because there are two emulators. QEMU is native and takes a
+  // Unix socket; Renode runs on Mono, whose Unix domain socket support has been
+  // unreliable for long enough that betting an emulated node on it is a poor
+  // trade for one path separator. A leading colon asks for TCP on loopback.
+  const bool useTcp = path[0] == ':';
+  int srv = -1;
+  if (useTcp) {
+    const int port = atoi(path + 1);
+    srv = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (srv < 0) {
+      perror("socket");
+      return 1;
+    }
+    int on = 1;
+    ::setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+    sockaddr_in in{};
+    in.sin_family = AF_INET;
+    in.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    in.sin_port = htons((uint16_t)port);
+    if (::bind(srv, (sockaddr*)&in, sizeof(in)) < 0) {
+      perror("bind");
+      return 1;
+    }
+    if (::listen(srv, 1) < 0) {
+      perror("listen");
+      return 1;
+    }
+    // The chosen port is printed because port 0 means "any", which is what a
+    // harness starting several nodes at once wants: it reads the number back
+    // rather than picking one and hoping.
+    socklen_t len = sizeof(in);
+    if (::getsockname(srv, (sockaddr*)&in, &len) == 0) {
+      printf("radioserver: listening on 127.0.0.1:%d\n", ntohs(in.sin_port));
+    }
+  } else {
+    ::unlink(path);
+    srv = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    if (srv < 0) {
+      perror("socket");
+      return 1;
+    }
+    sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    if (strlen(path) >= sizeof(addr.sun_path)) {
+      fprintf(stderr, "radioserver: socket path too long: %s\n", path);
+      return 1;
+    }
+    strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+    if (::bind(srv, (sockaddr*)&addr, sizeof(addr)) < 0) {
+      perror("bind");
+      return 1;
+    }
+    if (::listen(srv, 1) < 0) {
+      perror("listen");
+      return 1;
+    }
+    printf("radioserver: listening on %s\n", path);
   }
-  sockaddr_un addr{};
-  addr.sun_family = AF_UNIX;
-  if (strlen(path) >= sizeof(addr.sun_path)) {
-    fprintf(stderr, "radioserver: socket path too long: %s\n", path);
-    return 1;
-  }
-  strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
-  if (::bind(srv, (sockaddr*)&addr, sizeof(addr)) < 0) {
-    perror("bind");
-    return 1;
-  }
-  if (::listen(srv, 1) < 0) {
-    perror("listen");
-    return 1;
-  }
-  printf("radioserver: listening on %s\n", path);
   fflush(stdout);
 
   int bridgeFd = -1;
@@ -347,7 +383,7 @@ int main(int argc, char** argv) {
   if (bridgeFd >= 0) ::close(bridgeFd);
   ::close(qemuFd);
   ::close(srv);
-  ::unlink(path);
+  if (!useTcp) ::unlink(path);
   return 0;
 }
 
