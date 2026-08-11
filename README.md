@@ -10,6 +10,51 @@ the CLI and the preferences are the firmware's and not a reimplementation of it.
 A simulator that decides for itself which packets get relayed is answering a
 different question from the one anybody asked.
 
+## Where the real ends and the simulation begins
+
+Worth being exact about, because the interesting bugs live on the boundary.
+
+| Layer | What runs |
+|---|---|
+| MeshCore application and mesh logic | **real**, unmodified |
+| MeshCore radio driver — `CustomSX1262`, `RadioLibWrapper` | **real**, unmodified |
+| RadioLib 7.6.0 — the version MeshCore pins | **real**, vendored in `vendor/`, unmodified |
+| The SX1262 chip | **ours** — `variants/host/VirtualSX1262` |
+| Arduino, board, filesystem, RTC, sensors, RNG | **ours** — `variants/host/` |
+| The air | whatever drives the bridge |
+
+Nothing in MeshCore is patched. The build points at a checkout and compiles it as
+it stands, with the flags its own `platformio.ini` sets — `RADIOLIB_GODMODE`
+among them, because its driver reaches into RadioLib's internals.
+
+### The radio, and why it moved
+
+The radio driver used to be ours: `HostRadio`, a hand-written stand-in for the
+whole stack. It worked, and it quietly answered questions the firmware should
+have answered. MeshCore asks its radio "is another station transmitting?" before
+it sends; `HostRadio` decided that, so listen-before-talk was the simulator's
+behaviour rather than the firmware's — and two MeshCore versions differing *only*
+in their radio driver produced bit-identical results.
+
+Now RadioLib talks to a **virtual SX1262** over a `RadioLibHal`:
+
+- `SimHal` — pins, SPI, time and interrupts. Sixteen methods, all trivial but
+  `spiTransfer`, because RadioLib is written to be ported.
+- `VirtualSX1262` — the chip: command interpreter, registers, data buffer, and
+  the IRQ register, which is the point. `PREAMBLE_DETECTED` and `HEADER_VALID`
+  are raised from what is actually on the air, at the instant each becomes true,
+  and `CustomSX1262::isReceiving()` reads and times them exactly as on hardware.
+
+Two deliberate departures from silicon:
+
+- **Time is the node's, not the machine's.** `millis()` and `micros()` come from
+  simulated time, because a lockstep run is reproducible only if everything the
+  firmware can observe comes from the simulation.
+- **BUSY is never asserted.** Command *latency* is modelled; the handshake is
+  not. RadioLib spins on that line, and a spin that does not advance simulated
+  time never ends — a hang the firmware cannot tell apart from a fast chip, and
+  worth removing outright.
+
 ## A node is a node
 
 There is no list of supported node types here, and that is deliberate. A
