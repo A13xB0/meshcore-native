@@ -1,5 +1,7 @@
 #include "VirtualSX1262.h"
 
+#include <vector>
+
 #include <math.h>
 
 // Opcodes, from the SX1262 datasheet. Only the ones RadioLib issues for a LoRa
@@ -217,6 +219,69 @@ void VirtualSX1262::applyPacketParams(const uint8_t* p) {
   txLenForSend_ = p[3];
 }
 
+// Commands that answer with data rather than just a status byte.
+//
+// All of them are reads, and none of them changes any state, which is what
+// makes it safe to evaluate a growing prefix on every byte.
+static bool returnsData(uint8_t op) {
+  switch (op) {
+    case kReadBuffer:
+    case kReadRegister:
+    case kGetIrqStatus:
+    case kGetRxBufferStatus:
+    case kGetPacketStatus:
+    case kGetStatus:
+    case kGetDeviceErrors:
+    case kGetPacketType:
+      return true;
+    default:
+      return false;
+  }
+}
+
+void VirtualSX1262::beginTransaction() {
+  txn_.clear();
+  inTxn_ = true;
+}
+
+uint8_t VirtualSX1262::transferByte(uint8_t out) {
+  if (!inTxn_) beginTransaction();
+  txn_.push_back(out);
+
+  const size_t i = txn_.size() - 1;
+  if (returnsData(txn_[0])) {
+    // Evaluated against a padded command, not against the bytes received so
+    // far. Several getters fill their reply only once the buffer is long
+    // enough - GetPacketStatus writes in[2..4] under a length guard - so a
+    // prefix would answer zero for a byte the buffer path answers properly.
+    // Which byte carries which value does not depend on the length, only the
+    // guard does, so padding gives the same answer the full command would.
+    uint8_t scratch[260] = {0};
+    uint8_t padded[260] = {0};
+    const size_t have = txn_.size() < sizeof(padded) ? txn_.size() : sizeof(padded);
+    memcpy(padded, txn_.data(), have);
+    const size_t n = have > 16 ? have : 16;
+    runCommand(padded, n, scratch);
+    return i < sizeof(scratch) ? scratch[i] : 0;
+  }
+  // Everything else answers with the status byte in position 1 and nothing
+  // else, exactly as the buffer path does.
+  return i == 1 ? 0x22 : 0x00;
+}
+
+void VirtualSX1262::endTransaction() {
+  inTxn_ = false;
+  if (txn_.empty()) return;          // a chip select with no command in it
+  if (returnsData(txn_[0])) {        // already evaluated, and it changed nothing
+    txn_.clear();
+    return;
+  }
+  uint8_t scratch[260] = {0};
+  const size_t n = txn_.size() < sizeof(scratch) ? txn_.size() : sizeof(scratch);
+  runCommand(txn_.data(), n, scratch);
+  txn_.clear();
+}
+
 void VirtualSX1262::spiTransfer(const uint8_t* out, size_t len, uint8_t* in) {
   if (len == 0) return;
   memset(in, 0, len);
@@ -321,9 +386,15 @@ void VirtualSX1262::runCommand(const uint8_t* out, size_t len, uint8_t* in) {
     case kGetPacketStatus:
       // RSSI and SNR as the datasheet encodes them, from what the engine
       // measured - the one place a virtual chip can be exactly right.
-      if (len >= 4) in[2] = (uint8_t)(-rssi_ * 2);
-      if (len >= 5) in[3] = (uint8_t)(int8_t)(snr_ * 4);
-      if (len >= 6) in[4] = (uint8_t)(-rssi_ * 2);
+      // A byte is answerable as soon as the master clocks it: to receive
+      // in[2] it sends three bytes, not four. The guards were each one too
+      // strict, so signalRssiPkt came back as zero for the five-byte command
+      // RadioLib actually issues - which the streaming path exposed, because
+      // there the chip answers whatever is clocked and cannot consult a length
+      // it has not been told.
+      if (len >= 3) in[2] = (uint8_t)(-rssi_ * 2);
+      if (len >= 4) in[3] = (uint8_t)(int8_t)(snr_ * 4);
+      if (len >= 5) in[4] = (uint8_t)(-rssi_ * 2);
       break;
 
     case kGetRssiInst:

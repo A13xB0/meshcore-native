@@ -91,6 +91,18 @@ class VirtualSX1262 {
 
   void spiTransfer(const uint8_t* out, size_t len, uint8_t* in);
 
+  // The same chip, clocked a byte at a time.
+  //
+  // For an emulated MCU the SPI controller moves single bytes and the chip
+  // select delimits a command, so there is no buffer to hand over. These three
+  // rebuild one: the bytes are accumulated between the chip select falling and
+  // rising, answered from the same command decoder, and acted on once at the
+  // end - which is when a real chip acts on a command it has finished
+  // receiving.
+  void beginTransaction();
+  uint8_t transferByte(uint8_t out);
+  void endTransaction();
+
  private:
   void runCommand(const uint8_t* out, size_t len, uint8_t* in);
   void applyModulation(const uint8_t* p);
@@ -122,6 +134,12 @@ class VirtualSX1262 {
   // What the air is doing here, from the engine.
   bool channelBusy_ = false;
   uint64_t busySinceMs_ = 0;
+  // The transaction in flight on the streaming path, and whether anything
+  // arrived in it: a chip select that falls and rises with no bytes is not a
+  // command and must not be applied.
+  std::vector<uint8_t> txn_;
+  bool inTxn_ = false;
+
   bool preambleRaised_ = false;
   bool headerRaised_ = false;
 
