@@ -69,6 +69,10 @@ constexpr uint8_t kChannelBusy = 0x08;
 constexpr uint8_t kRadioStats = 0x09;
 
 VirtualSX1262 gChip;
+//  MESHCORE_RADIO_TRACE=1 logs every SPI transaction. Off by default: this is
+//  on the hot path of every byte.
+const bool gTracing = getenv("MESHCORE_RADIO_TRACE") != nullptr;
+std::vector<uint8_t> gTrace;
 std::mutex gChipMu;          // QEMU and the engine both reach the chip
 uint32_t gSimMillis = 0;
 
@@ -232,11 +236,25 @@ bool serviceQemu(int fd, uint64_t* transactions, uint64_t* bytes) {
   switch (tag) {
     case kCsAssert:
       gChip.beginTransaction();
+      gTrace.clear();
       return true;
 
     case kCsRelease:
       gChip.endTransaction();
       (*transactions)++;
+      //  One line per SPI transaction, opcode first. The point is comparison:
+      //  the same chip serves a native node, an emulated ESP32 and an emulated
+      //  nRF52, so when one of them fails to bring its radio up, a diff of the
+      //  three traces says which command got an answer it did not like.
+      if (gTracing && !gTrace.empty()) {
+        fprintf(stderr, "spi:");
+        for (size_t i = 0; i < gTrace.size() && i < 24; i++) {
+          fprintf(stderr, " %02x", gTrace[i]);
+        }
+        if (gTrace.size() > 24) fprintf(stderr, " ...(%zu)", gTrace.size());
+        fprintf(stderr, "\n");
+        fflush(stderr);
+      }
       return true;
 
     case kXfer: {
@@ -244,6 +262,7 @@ bool serviceQemu(int fd, uint64_t* transactions, uint64_t* bytes) {
       if (!readAll(fd, &out, 1)) return false;
       uint8_t in = gChip.transferByte(out);
       (*bytes)++;
+      if (gTracing) gTrace.push_back(out);
       return writeAll(fd, &in, 1);
     }
 
