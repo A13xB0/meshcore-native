@@ -81,7 +81,16 @@ jobs:
 
           plan='[]'
           for ref in $refs; do
-            sha=$(git rev-parse "$ref^{commit}" 2>/dev/null || git rev-parse "origin/$ref^{commit}" 2>/dev/null || true)
+            # --verify, because plain rev-parse echoes its argument back and
+            # exits zero-ish when it cannot resolve it: the guard below then
+            # sees a non-empty "sha" that is really the ref name, and the build
+            # matrix runs a job whose checkout cannot succeed. A ref that does
+            # not exist should be skipped with the warning below, which is what
+            # it says it does.
+            sha=$(git rev-parse --verify --quiet "$ref^{commit}" \
+                  || git rev-parse --verify --quiet "origin/$ref^{commit}" \
+                  || true)
+            case "$sha" in *[!0-9a-f]*|"") sha="" ;; esac
             if [ -z "$sha" ]; then
               echo "::warning::$UPSTREAM has no ref $ref; skipping"
               continue
