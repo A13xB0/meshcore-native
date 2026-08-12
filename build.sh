@@ -90,7 +90,16 @@ cxxflags=("${STD:--std=c++17}" -O2 -w -fpermissive -DMESHCORE_HOST_VARIANT=1 -DN
           # The radio a board is fitted with. Real variants set these per board;
           # the scenario overrides them at runtime, and RadioLib's begin() wants
           # a starting point.
-          -DLORA_FREQ=869.618 -DLORA_BW=62.5 -DLORA_SF=8 -DLORA_CR=5 -DLORA_TX_POWER=20
+          #
+          # LORA_TX_POWER is also the ceiling. MeshCore defines
+          # MAX_LORA_TX_POWER as LORA_TX_POWER unless a variant overrides it,
+          # and the companion both reports that value as its maximum and clamps
+          # any set-power request to it. At 20 a scenario asking for 22 was
+          # silently reduced, with the only sign a status line in the workbench.
+          #
+          # 22 dBm is what an SX1262 delivers at its pin, and it is within the
+          # UK allowance for the 869.4-869.65 MHz band.
+          -DLORA_FREQ=869.618 -DLORA_BW=62.5 -DLORA_SF=8 -DLORA_CR=5 -DLORA_TX_POWER=22
           -include "$variant/HostArduino.h" "${extra_flags[@]}")
 
 # A build whose virtual radio misbehaves the way real ones do. Published as its
