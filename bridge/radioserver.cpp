@@ -49,6 +49,11 @@ enum : uint8_t {
   kCsRelease = 0x02,
   kXfer = 0x03,
   kReadBusy = 0x04,
+  //  Whether DIO1 is asserted. QEMU never needed this - the ESP32 firmware
+  //  polls the chip's IRQ register over SPI - but an nRF52 waits on the pin,
+  //  and a pin nothing drives is a node that configures its radio and then
+  //  sits there for ever.
+  kReadIrq = 0x05,
 };
 
 // The engine side, shared with the simulator's Go half and with bridge/main.cpp.
@@ -240,6 +245,11 @@ bool serviceQemu(int fd, uint64_t* transactions, uint64_t* bytes) {
       uint8_t in = gChip.transferByte(out);
       (*bytes)++;
       return writeAll(fd, &in, 1);
+    }
+
+    case kReadIrq: {
+      uint8_t irq = gChip.irqAsserted() ? 1 : 0;
+      return writeAll(fd, &irq, 1);
     }
 
     case kReadBusy: {
