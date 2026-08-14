@@ -46,9 +46,20 @@ inline int analogRead(int) { return 0; }
 // MeshCore uses these as plain integers, so a constant serves it identically.
 constexpr int HIGH = 1;
 constexpr int LOW = 0;
+
+// INPUT and OUTPUT are Arduino pin modes and also Windows type names -
+// winuser.h declares `} INPUT,*PINPUT,*LPINPUT;` - so in a translation unit
+// that includes windows.h these two cannot both exist, whether ours is a
+// macro or a constant.
+//
+// Only the bridge includes windows.h, through winsock2.h, and the bridge
+// drives no pins: it is a socket and a process. So it says so, and MeshCore's
+// own code - which does use these - is unaffected on every platform.
+#ifndef MESHCORE_HOST_BRIDGE
 constexpr int INPUT = 0;
 constexpr int OUTPUT = 1;
 constexpr int INPUT_PULLUP = 2;
+#endif
 
 // SPI, which nothing here uses.
 //
