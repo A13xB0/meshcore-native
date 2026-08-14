@@ -70,7 +70,7 @@ if [ "$os" = windows ]; then
   extra_link=(-lws2_32 -static -static-libgcc -static-libstdc++)
 fi
 if [ ${#extra_flags[@]} -gt 0 ]; then
-  extra_link+=("${extra_flags[@]}")
+  extra_link+=(${extra_flags[@]+"${extra_flags[@]}"})
 fi
 
 obj="$out/obj/$role"
@@ -127,7 +127,16 @@ fi
 # application. Radio drivers and display drivers are not enumerated away — they
 # simply fail to compile and get dropped, which keeps this working when upstream
 # moves a file.
-mapfile -t candidates < <(
+#
+# Collected with a loop rather than `mapfile`, which is a bash 4 builtin:
+# macOS ships bash 3.2 and has neither that nor a reliable process
+# substitution here, so the Mac build failed at this line before it compiled
+# anything.
+candidates=()
+while IFS= read -r _f; do
+  [ -n "$_f" ] && candidates+=("$_f")
+done <<CANDIDATES
+$(
   find "$MESHCORE/src" -maxdepth 2 -name '*.cpp' 2>/dev/null
   # The radio driver layer sits a level deeper than the sweep above reaches,
   # and is the whole reason RadioLib is here: this is MeshCore's own driver.
@@ -139,6 +148,7 @@ mapfile -t candidates < <(
   find "$radiolib/utils" -name '*.cpp' 2>/dev/null
   find "$src" -maxdepth 1 -name '*.cpp' 2>/dev/null
 )
+CANDIDATES
 
 skipped=()
 objs=()
@@ -180,7 +190,7 @@ for f in "$MESHCORE"/lib/ed25519/*.c; do
   "$CC" -std=c11 -O2 -w -I "$MESHCORE/lib/ed25519" -c "$f" -o "$o" 2>/dev/null && objs+=("$o")
 done
 
-if ! "$CXX" -o "$bin" "${objs[@]}" "${extra_link[@]}" 2>"$obj/link.log"; then
+if ! "$CXX" -o "$bin" "${objs[@]}" ${extra_link[@]+"${extra_link[@]}"} 2>"$obj/link.log"; then
   echo "build.sh: $role does not link for a host on this MeshCore version." >&2
   echo "Unresolved after dropping ${#skipped[@]} board-specific sources:" >&2
   grep -o "undefined reference to \`[^']*'" "$obj/link.log" | sort -u | head -20 >&2
