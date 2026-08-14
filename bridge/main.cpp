@@ -291,13 +291,45 @@ int main(int argc, char** argv) {
           // What the chip has seen, alongside the acknowledgement. Cheap, and
           // it turns "the mesh went quiet" into a question with an answer:
           // was the channel busy, or did our chip only say so?
+          //
+          // The same payload radioserver sends, in the same order. Two writers
+          // of one wire format is the arrangement RadioServerSX1262 was written
+          // to avoid, and it is only tolerable while they are kept identical:
+          // an emulated node and a native one reporting different shapes would
+          // make every comparison between them a comparison of our own code.
           auto& c = sim_hal.chip();
           uint32_t st[4] = {c.irqReads(), c.busyReads(), c.busyMs(), c.spuriousRaises()};
-          uint8_t sb[16];
+          uint8_t sb[37];
           for (int k = 0; k < 4; k++) {
             sb[k*4+0] = (uint8_t)(st[k] >> 24); sb[k*4+1] = (uint8_t)(st[k] >> 16);
             sb[k*4+2] = (uint8_t)(st[k] >> 8);  sb[k*4+3] = (uint8_t)st[k];
           }
+          auto put32 = [&](int at, uint32_t v) {
+            sb[at+0] = (uint8_t)(v >> 24); sb[at+1] = (uint8_t)(v >> 16);
+            sb[at+2] = (uint8_t)(v >> 8);  sb[at+3] = (uint8_t)v;
+          };
+          auto put16 = [&](int at, uint16_t v) {
+            sb[at+0] = (uint8_t)(v >> 8); sb[at+1] = (uint8_t)v;
+          };
+          sb[16] = c.rxGainReg();
+          sb[17] = (uint8_t)c.txPowerDbm();
+          sb[18] = c.femEnabled() ? 1 : 0;
+          sb[19] = c.mode();
+          sb[20] = (uint8_t)c.sf();
+          sb[21] = (uint8_t)c.cr();
+          put32(22, c.freqHz());
+          put32(26, (uint32_t)(c.bwKHz() * 1000.0f + 0.5f));
+          put16(30, (uint16_t)c.preambleSyms());
+          put16(32, c.irqMask());
+          put16(34, c.irqFlags());
+          // Always "not answered" here, never "the module was out".
+          //
+          // A native node has no front-end module wired: SimHal owns an array
+          // of pins and nothing drives an enable line into it. Reporting the
+          // line as low would be true of the pin and false about the board, and
+          // the engine would dock every native node on a board that has a
+          // module for a fault it did not have.
+          sb[36] = 0;
           writeMsg(gFd, kRadioStats, sb, sizeof(sb));
         }
         if (!writeMsg(gFd, kAck, payload.data(), 4)) goto done;

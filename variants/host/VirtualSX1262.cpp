@@ -20,6 +20,7 @@ constexpr uint8_t kSetTxParams = 0x8E;
 constexpr uint8_t kSetModulationParams = 0x8B;
 constexpr uint8_t kSetPacketParams = 0x8C;
 constexpr uint8_t kSetCadParams = 0x88;
+constexpr uint8_t kCalibrate = 0x89;
 constexpr uint8_t kSetBufferBase = 0x8F;
 constexpr uint8_t kWriteBuffer = 0x0E;
 constexpr uint8_t kReadBuffer = 0x1E;
@@ -168,6 +169,11 @@ void VirtualSX1262::startRx() { mode_ = 1; }
 
 void VirtualSX1262::startTx() {
   mode_ = 2;
+  // Latched here because this is the instant it decides anything. RadioLib
+  // raises the RF switch into transmit before issuing SetTx, so by now the line
+  // carries the answer to "does this transmission reach the antenna".
+  femAtTx_ = femEnabled_;
+  hasTransmitted_ = true;
   pendingTx.assign(&buffer_[txBase_], &buffer_[txBase_] + txLenForSend_);
   hasPendingTx = true;
 }
@@ -311,6 +317,29 @@ void VirtualSX1262::runCommand(const uint8_t* out, size_t len, uint8_t* in) {
         freqHz_ = (uint32_t)((double)raw * 32000000.0 / 33554432.0);
       }
       break;
+
+    // The PA drive level, in dBm as a signed byte. Stored where it was
+    // discarded before: the engine used to take transmit power from the board
+    // profile alone, which is a datasheet figure and not a claim about what
+    // this firmware asked for.
+    case kSetTxParams: if (len >= 2) txPowerDbm_ = (int8_t)out[1]; break;
+
+    // Calibration returns the receive gain register to its reset default.
+    //
+    // Modelled rather than ignored because it is the mechanism behind the fault
+    // MeshCore 1.17.1 fixed. sx126xResetAGC() runs a full CALIBRATE_ALL and then
+    // re-applies the compile-time SX126X_RX_BOOSTED_GAIN macro - so a variant
+    // that does not define the macro, generic-e22 among them, re-applies nothing
+    // and boosted gain is gone until the node reboots. The firmware's own prefs
+    // and its CLI go on reporting the setting the operator chose, so there is no
+    // symptom anywhere except sensitivity.
+    //
+    // "May" is doing work in MeshCore's own comment for this - SX126xReset.h
+    // calls it "RX settings that calibration may reset" - so what this models is
+    // the chip behaving the way the firmware's authors assumed. Section 9.6 of
+    // the SX126x datasheet is the authority, and it should be reconciled against
+    // this before any sensitivity figure derived from it is published.
+    case kCalibrate: regs_[kRegRxGain] = kRxGainPowerSaving; break;
 
     case kSetModulationParams: if (len >= 4) applyModulation(&out[1]); break;
     case kSetPacketParams:     if (len >= 7) applyPacketParams(&out[1]); break;

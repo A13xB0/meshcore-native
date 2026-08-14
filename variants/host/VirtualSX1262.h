@@ -53,6 +53,76 @@ class VirtualSX1262 {
   // What the engine measured for the last frame it delivered.
   void setLastSignal(float rssiDbm, float snrDb) { rssi_ = rssiDbm; snr_ = snrDb; }
 
+  // ---- what the firmware has configured this radio to be ----
+  //
+  // The board profile says what the hardware can do; these say what the
+  // firmware actually asked for, and the two diverge whenever the firmware has
+  // a bug. MeshCore 1.17.1 fixed one of each kind - receive gain reverting
+  // after an AGC reset, and a transmit-enable line that never went high - and
+  // neither was visible from outside the chip because nothing here was read.
+  //
+  // Reported raw rather than interpreted. Deciding that a given gain register
+  // value is worth 2 dB is the engine's business; the chip's business is to say
+  // what the register holds.
+  uint8_t rxGainReg() const { return regs_[kRegRxGain]; }
+  int8_t txPowerDbm() const { return txPowerDbm_; }
+
+  // The front-end module's transmit-enable line, driven by the firmware as an
+  // ordinary GPIO rather than through the chip.
+  //
+  // Defaults to false because that is what a pin nobody has driven reads as. A
+  // board with no FEM has no such pin, and the engine knows which boards those
+  // are from the profile - answering true here to be kind would hide exactly
+  // the fault this exists to catch.
+  bool femEnabled() const { return femEnabled_; }
+  void setFemEnabled(bool on) { femEnabled_ = on; }
+
+  // Whether the module was switched in at the moment transmission started.
+  //
+  // This, not femEnabled(), is what decides how much power left the board. The
+  // line is supposed to be low while the node listens - RadioLib drives it from
+  // its RF-switch table and only raises it just before SetTx - so reading the
+  // live level would dock a node for the ordinary state of receiving. What the
+  // T096 fault broke was the line being high at the moment it mattered, and
+  // that is a property of the transmission rather than of the node.
+  // Until the node has transmitted once there is no answer, and "the module was
+  // out" is the wrong one to invent: it would dock a node for not having spoken
+  // yet. hasTransmitted separates the two.
+  bool femAtTx() const { return femAtTx_; }
+  bool hasTransmitted() const { return hasTransmitted_; }
+
+  // The rest of what this radio has been configured to be. Nothing above the
+  // chip can see any of it today, which is how a node can be set to the wrong
+  // spreading factor, the wrong bandwidth or a gain mode its operator did not
+  // choose, and look identical from outside to one that is right.
+  //
+  // Reported wholesale rather than field by field as each becomes interesting:
+  // the expensive part is the wire format, and widening it once costs less than
+  // widening it five times.
+  uint8_t mode() const { return mode_; }          // 0 standby, 1 rx, 2 tx, 3 cad
+  int sf() const { return sf_; }
+  float bwKHz() const { return bwKHz_; }
+  int cr() const { return cr_; }
+  uint32_t preambleSyms() const { return preambleSyms_; }
+  uint32_t freqHz() const { return freqHz_; }
+  uint16_t irqMask() const { return irqMask_; }
+  uint16_t irqFlags() const { return irq_; }
+
+  // Receive gain, at the address the datasheet gives it, with the two values
+  // RadioLib writes. Power saving is the reset default and what this chip comes
+  // up holding.
+  //
+  // Worth knowing why watching this register is enough. MeshCore does not use
+  // RadioLib's own resetAGC(), which restores the mode from cached runtime
+  // state; it has its own in helpers/radiolib/SX126xReset.h, which re-applies
+  // the compile-time SX126X_RX_BOOSTED_GAIN macro and so discards whatever the
+  // operator set at runtime. The firmware therefore writes the register itself
+  // after every AGC reset - we do not have to model what calibration does to
+  // silicon to see the fault, only to record what was written.
+  static constexpr uint16_t kRegRxGain = 0x08AC;
+  static constexpr uint8_t kRxGainBoosted = 0x96;
+  static constexpr uint8_t kRxGainPowerSaving = 0x94;
+
   // Advance internal timers to this simulated instant.
   void tick(uint64_t nowMs);
 
@@ -130,6 +200,17 @@ class VirtualSX1262 {
   int cr_ = 5;
   uint32_t preambleSyms_ = 16;
   uint32_t freqHz_ = 869525000;
+  // What SetTxParams asked the PA for. Not the same as what leaves the
+  // antenna, which is this plus the board's front end - and the front end only
+  // contributes if the firmware remembered to switch it on.
+  //
+  // INT8_MIN until the firmware has said, because 0 dBm is a level a radio can
+  // legitimately be set to and a node that has not configured itself yet must
+  // not be read as one that chose silence.
+  int8_t txPowerDbm_ = -128;
+  bool femEnabled_ = false;
+  bool femAtTx_ = false;
+  bool hasTransmitted_ = false;
 
   // What the air is doing here, from the engine.
   bool channelBusy_ = false;
