@@ -13,7 +13,30 @@
 
 // Seeded rather than entropic: a run has to be reproducible from its seed, and
 // the identity a node generates comes through here.
-inline void randomSeed(unsigned long seed) { srandom(seed); }
+//
+// Its own generator rather than POSIX random(): that function does not exist
+// on Windows at all, and where it does exist the sequence is the platform's
+// business - so the same seed produced different node identities on Linux and
+// macOS, which is not what "reproducible from its seed" is supposed to mean.
+// This is xorshift64*, which is small, fast, and identical everywhere.
+inline unsigned long long& hostRandomState() {
+  static unsigned long long s = 0x9E3779B97F4A7C15ull;
+  return s;
+}
+inline void randomSeed(unsigned long seed) {
+  // Never zero: xorshift is stuck there for ever.
+  hostRandomState() = (unsigned long long)seed * 0x2545F4914F6CDD1Dull + 0x9E3779B97F4A7C15ull;
+}
+inline long hostRandom() {
+  unsigned long long x = hostRandomState();
+  x ^= x >> 12;
+  x ^= x << 25;
+  x ^= x >> 27;
+  hostRandomState() = x;
+  // Positive half only: callers treat this as Arduino's random(), which never
+  // returns a negative number.
+  return (long)((x * 0x2545F4914F6CDD1Dull) >> 33);
+}
 
 // Arduino defines these as macros and MeshCore calls them unqualified.
 // Templates rather than macros: force-including a `min(a,b)` macro ahead of the
@@ -50,7 +73,8 @@ inline char* utoa(unsigned long value, char* out, int base) {
   return out;
 }
 
-inline long random(long howbig) { return howbig <= 0 ? 0 : random() % howbig; }
+inline long random() { return hostRandom(); }
+inline long random(long howbig) { return howbig <= 0 ? 0 : hostRandom() % howbig; }
 inline long random(long howsmall, long howbig) {
   return howbig <= howsmall ? howsmall : howsmall + random(howbig - howsmall);
 }
