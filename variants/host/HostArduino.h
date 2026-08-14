@@ -5,6 +5,22 @@
 // at namespace scope and there is nowhere later to put them.
 #pragma once
 
+// Windows, before anything can include its headers.
+//
+// This file is force-included ahead of every translation unit, which makes it
+// the only place that can set these in time. The bridge reaches windows.h
+// through winsock2.h, and without NOMINMAX that header defines min and max as
+// macros - which then eat the templates below and produce a parse error deep
+// inside winuser.h, a long way from anything to do with either.
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX 1
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN 1
+#endif
+#endif
+
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
