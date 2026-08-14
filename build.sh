@@ -170,7 +170,12 @@ done
 for f in "$variant"/*.cpp "$root/bridge/main.cpp"; do
   case "$(basename "$f")" in *_test.cpp) continue ;; esac
   o="$obj/$(basename "${f%.cpp}").o"
-  if ! "$CXX" "${cxxflags[@]}" "${inc[@]}" -c "$f" -o "$o"; then
+  # The bridge is the one file that includes windows.h - through winsock2.h -
+  # and Windows owns the names INPUT and OUTPUT there. It drives no pins, so
+  # it asks the variant not to declare them. See variants/host/Arduino.h.
+  bridgeflag=()
+  case "$f" in */bridge/main.cpp) bridgeflag=(-DMESHCORE_HOST_BRIDGE=1) ;; esac
+  if ! "$CXX" "${cxxflags[@]}" ${bridgeflag[@]+"${bridgeflag[@]}"} "${inc[@]}" -c "$f" -o "$o"; then
     echo "build.sh: the host variant itself failed to compile" >&2
     exit 1
   fi
