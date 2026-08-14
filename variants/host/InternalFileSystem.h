@@ -190,12 +190,23 @@ class Adafruit_LittleFS {
     if (!p.empty() && p[0] == '/') p.erase(0, 1);
     return root_.empty() ? p : root_ + "/" + p;
   }
+  // Windows' mkdir takes a path and nothing else - no mode - so calling the
+  // POSIX form fails to compile there rather than at runtime. One wrapper
+  // rather than an #ifdef at the call site, because there will be more calls.
+  static int hostMkdir(const char* path) {
+#ifdef _WIN32
+    return ::mkdir(path);
+#else
+    return ::mkdir(path, 0755);
+#endif
+  }
+
   static bool ensureDir(const std::string& dir) {
     if (dir.empty()) return true;
     std::string acc;
     for (size_t i = 0; i <= dir.size(); i++) {
       if (i == dir.size() || dir[i] == '/') {
-        if (!acc.empty()) ::mkdir(acc.c_str(), 0755);
+        if (!acc.empty()) hostMkdir(acc.c_str());
       }
       if (i < dir.size()) acc += dir[i];
     }
