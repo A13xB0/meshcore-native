@@ -37,11 +37,18 @@ inline void digitalWrite(int, int) {}
 inline int digitalRead(int) { return 0; }
 inline int analogRead(int) { return 0; }
 
-#define HIGH 1
-#define LOW 0
-#define INPUT 0
-#define OUTPUT 1
-#define INPUT_PULLUP 2
+// Constants rather than macros, for the same reason min and max are templates
+// in HostArduino.h: a macro takes the name everywhere, including inside other
+// people's headers. Windows has a struct called INPUT, and `#define INPUT 0`
+// turned its declaration into `} 0,*P0,*LP0;` - which the compiler reports as
+// a missing semicolon in winuser.h, a file nobody here has read.
+//
+// MeshCore uses these as plain integers, so a constant serves it identically.
+constexpr int HIGH = 1;
+constexpr int LOW = 0;
+constexpr int INPUT = 0;
+constexpr int OUTPUT = 1;
+constexpr int INPUT_PULLUP = 2;
 
 // SPI, which nothing here uses.
 //
