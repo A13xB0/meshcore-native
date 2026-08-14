@@ -86,6 +86,11 @@ enum : uint8_t {
   //  and a pin nothing drives is a node that configures its radio and then
   //  sits there for ever.
   kReadIrq = 0x05,
+  //  The board's front-end module enable line, with its level in the next
+  //  byte. It arrives here rather than over SPI because the firmware drives it
+  //  as an ordinary GPIO - the module is beside the radio, not inside it, and
+  //  the chip has no idea whether its output reaches an antenna.
+  kSetFem = 0x06,
 };
 
 // The engine side, shared with the simulator's Go half and with bridge/main.cpp.
@@ -134,6 +139,52 @@ bool writeMsg(sock_t fd, uint8_t kind, const uint8_t* p, size_t n) {
   uint8_t hdr[3] = {kind, (uint8_t)(n >> 8), (uint8_t)n};
   if (!writeAll(fd, hdr, 3)) return false;
   return n == 0 || writeAll(fd, p, n);
+}
+
+void put32(uint8_t* p, uint32_t v) {
+  p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16);
+  p[2] = (uint8_t)(v >> 8);  p[3] = (uint8_t)v;
+}
+void put16(uint8_t* p, uint16_t v) {
+  p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v;
+}
+
+// Sixteen bytes of counters, then everything this radio has been configured to
+// be. The engine reads it on length, so a peer that stops at sixteen still
+// parses - and bridge/main.cpp writes the same payload in the same order,
+// because an emulated node and a native one reporting different shapes would
+// make every comparison between them a comparison of our own code.
+//
+// It exists because a board profile is a datasheet claim about hardware and not
+// a claim about the firmware running on it. Until the chip reported its own
+// state there was no way here to tell a node configured correctly from one that
+// was not.
+void writeRadioStats(sock_t fd) {
+  uint8_t sb[37];
+  put32(&sb[0], gChip.irqReads());
+  put32(&sb[4], gChip.busyReads());
+  put32(&sb[8], gChip.busyMs());
+  put32(&sb[12], gChip.spuriousRaises());
+
+  sb[16] = gChip.rxGainReg();
+  sb[17] = (uint8_t)gChip.txPowerDbm();
+  sb[18] = gChip.femEnabled() ? 1 : 0;
+  sb[19] = gChip.mode();
+  sb[20] = (uint8_t)gChip.sf();
+  sb[21] = (uint8_t)gChip.cr();
+  put32(&sb[22], gChip.freqHz());
+  // Bandwidth in whole hertz. The chip holds it in kHz as a float because the
+  // datasheet's table is fractional - 7.81, 10.42 - and rounding it to kHz here
+  // would make two distinct settings look like one.
+  put32(&sb[26], (uint32_t)(gChip.bwKHz() * 1000.0f + 0.5f));
+  put16(&sb[30], (uint16_t)gChip.preambleSyms());
+  put16(&sb[32], gChip.irqMask());
+  put16(&sb[34], gChip.irqFlags());
+  // Three states, because "has not transmitted" is not "transmitted with the
+  // module out": 0 no transmission yet, 1 module out, 2 module in.
+  sb[36] = !gChip.hasTransmitted() ? 0 : (gChip.femAtTx() ? 2 : 1);
+
+  writeMsg(fd, kRadioStats, sb, sizeof(sb));
 }
 
 // Anything the firmware handed its radio goes out to the engine now.
@@ -224,16 +275,7 @@ bool serviceBridge(sock_t fd) {
       gChip.tick(gSimMillis);
       drainTx(fd);
 
-      uint32_t st[4] = {gChip.irqReads(), gChip.busyReads(), gChip.busyMs(),
-                        gChip.spuriousRaises()};
-      uint8_t sb[16];
-      for (int k = 0; k < 4; k++) {
-        sb[k * 4 + 0] = (uint8_t)(st[k] >> 24);
-        sb[k * 4 + 1] = (uint8_t)(st[k] >> 16);
-        sb[k * 4 + 2] = (uint8_t)(st[k] >> 8);
-        sb[k * 4 + 3] = (uint8_t)st[k];
-      }
-      writeMsg(fd, kRadioStats, sb, sizeof(sb));
+      writeRadioStats(fd);
       if (!writeMsg(fd, kAck, payload.data(), 4)) return false;
       break;
     }
@@ -301,6 +343,13 @@ bool serviceQemu(sock_t fd, uint64_t* transactions, uint64_t* bytes) {
     case kReadIrq: {
       uint8_t irq = gChip.irqAsserted() ? 1 : 0;
       return writeAll(fd, &irq, 1);
+    }
+
+    case kSetFem: {
+      uint8_t level = 0;
+      if (!readAll(fd, &level, 1)) return false;
+      gChip.setFemEnabled(level != 0);
+      return true;
     }
 
     case kReadBusy: {
