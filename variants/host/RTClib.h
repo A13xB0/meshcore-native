@@ -27,7 +27,14 @@ class DateTime {
   struct tm fields() const {
     time_t tt = (time_t)t_;
     struct tm out {};
+    // gmtime_r is POSIX; Windows spells it gmtime_s and takes its arguments
+    // the other way round. Neither is the plain gmtime, which returns a
+    // pointer to shared state and is a race waiting for a second node.
+#ifdef _WIN32
+    gmtime_s(&out, &tt);
+#else
     gmtime_r(&tt, &out);
+#endif
     return out;
   }
   uint32_t t_;
