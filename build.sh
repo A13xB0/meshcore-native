@@ -170,7 +170,26 @@ done
 for f in "$variant"/*.cpp "$root/bridge/main.cpp"; do
   case "$(basename "$f")" in *_test.cpp) continue ;; esac
   o="$obj/$(basename "${f%.cpp}").o"
-  if ! "$CXX" "${cxxflags[@]}" "${inc[@]}" -c "$f" -o "$o"; then
+  # The bridge is plain host C++ - sockets and a process - not Arduino code,
+  # so it does not get the Arduino shim force-included. On Windows that shim
+  # reaches windows.h through winsock2.h and the two disagree about min, max
+  # and friends, which surfaces as a parse error deep inside winuser.h and
+  # looks like a broken toolchain rather than a header we imposed.
+  fileflags=("${cxxflags[@]}")
+  case "$f" in
+    */bridge/main.cpp)
+      fileflags=()
+      for _cf in "${cxxflags[@]}"; do
+        case "$_cf" in
+          -include|"$variant/HostArduino.h") continue ;;
+        esac
+        fileflags+=("$_cf")
+      done
+      # And ask Windows for the quiet version of its headers while we are here.
+      fileflags+=(-DNOMINMAX -DWIN32_LEAN_AND_MEAN)
+      ;;
+  esac
+  if ! "$CXX" "${fileflags[@]}" "${inc[@]}" -c "$f" -o "$o"; then
     echo "build.sh: the host variant itself failed to compile" >&2
     exit 1
   fi
