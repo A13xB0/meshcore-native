@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+#
+# Note on "${arr[@]+...}": macOS ships bash 3.2, where expanding an empty
+# array under `set -u` is an unbound-variable error rather than nothing at
+# all. Every array expansion here is guarded for that reason - a Linux-only
+# spelling builds fine here and fails only on the Mac.
 # Build one MeshCore application for this host.
 #
 #   MESHCORE=path/to/MeshCore CRYPTO=path/to/Crypto ./build.sh <role> [outdir]
@@ -100,7 +105,7 @@ cxxflags=("${STD:--std=c++17}" -O2 -w -fpermissive -DMESHCORE_HOST_VARIANT=1 -DN
           # 22 dBm is what an SX1262 delivers at its pin, and it is within the
           # UK allowance for the 869.4-869.65 MHz band.
           -DLORA_FREQ=869.618 -DLORA_BW=62.5 -DLORA_SF=8 -DLORA_CR=5 -DLORA_TX_POWER=22
-          -include "$variant/HostArduino.h" "${extra_flags[@]}")
+          -include "$variant/HostArduino.h" ${extra_flags[@]+"${extra_flags[@]}"})
 
 # A build whose virtual radio misbehaves the way real ones do. Published as its
 # own variant - see roles.d/README.md - because "does this firmware survive a
