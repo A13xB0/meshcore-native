@@ -277,6 +277,15 @@ int main(int argc, char** argv) {
         // takes different branches.
         while (g_sim_millis < at) {
           g_sim_millis++;
+          // The RTC only has second resolution, so it moves once per 1000 of
+          // these - but it has to actually move. Without this the comment
+          // above was aspirational: rtc_clock stayed at its construction
+          // value forever, so two adverts sent seconds apart carried the
+          // same embedded timestamp and hashed identically, and the second
+          // was silently deduplicated as a repeat of the first.
+          if (g_sim_millis % 1000 == 0) {
+            rtc_clock.advance(1);
+          }
           sim_hal.beginTick(g_sim_millis);
           sim_hal.servicePendingIrq();
           loop();
